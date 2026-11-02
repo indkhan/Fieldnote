@@ -8,6 +8,10 @@ import { createPropertyQueue } from './property-queue.mjs';
 import { esc, icon } from './html';
 import { fieldKinds, operators, sortFields, readView, defaultView, type ProjectField, type PropertyValue, type Values, type Rule, type View } from './property-ui';
 import { renderOverview, propertyControl } from './overview-ui';
+import { getVersion } from '@tauri-apps/api/app';
+import { check, type Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { installBlockReason, downloadPercent } from './update-policy.mjs';
 
 interface Question { id: string; text: string; answer: string }
 interface Project { id: string; name: string }
@@ -62,7 +66,7 @@ async function openSession(id: string) {
 }
 
 function render() {
-  $('#app').innerHTML=`<section class="surface"><header class="topbar"><div class="projectbox"><div class="brand"><span class="mark">${icon('note')}</span>Research</div><span class="divider"></span><select id="project" aria-label="Project" ${recording.active?'disabled':''}>${state.projects.map(p=>`<option value="${p.id}" ${p.id===state.projectId?'selected':''}>${esc(p.name)}</option>`).join('')}</select><button class="textbtn" data-action="new-project" aria-label="Add project" ${recording.active?'disabled':''}>${icon('plus')}</button></div><button class="local" data-action="storage"><i class="dot"></i>On this computer</button></header><div class="content">${state.page==='list'?renderList():renderForm()}</div><footer class="appfooter"><span>${state.page==='list'?'No account · your projects stay local':'Written feedback and original audio stay together'}</span><span>${state.page==='list'?state.total+' sessions in '+esc(project().name):'Microphone capture · original audio kept'}</span></footer></section>`;
+  $('#app').innerHTML=`<section class="surface"><header class="topbar"><div class="projectbox"><div class="brand"><span class="mark">${icon('note')}</span>Research</div><span class="divider"></span><select id="project" aria-label="Project" ${recording.active?'disabled':''}>${state.projects.map(p=>`<option value="${p.id}" ${p.id===state.projectId?'selected':''}>${esc(p.name)}</option>`).join('')}</select><button class="textbtn" data-action="new-project" aria-label="Add project" ${recording.active?'disabled':''}>${icon('plus')}</button></div><button class="local" data-action="storage"><i class="dot"></i>On this computer</button></header><div class="content">${state.page==='list'?renderList():renderForm()}</div><footer class="appfooter"><span>${state.page==='list'?'No account · your projects stay local':'Written feedback and original audio stay together'}</span><span>${state.page==='list'?state.total+' sessions in '+esc(project().name):'Microphone capture · original audio kept'}</span><span class="updatebox">${updateControl()}</span></footer></section>`;
   if(state.page==='list'){const all=$<HTMLInputElement>('#select-all');const n=state.rows.filter(s=>state.selected.has(s.id)).length;all.indeterminate=n>0&&n<state.rows.length;}else{savedStatus();updateMeter();}savedStatus();restorePropertyValidity();
 }
 function renderList() {
@@ -78,6 +82,68 @@ function renderAudio() {
 }
 function modal(title: string,subtitle: string,content: string) { const d=$<HTMLDialogElement>('#dialog');d.innerHTML=`<h2>${esc(title)}</h2><p class="subtitle">${esc(subtitle)}</p>${content}`;if(!d.open)d.showModal(); }
 function closeModal(){ $<HTMLDialogElement>('#dialog').close(); }
+
+let appVersion = '';
+let availableUpdate: Update|null = null;
+let updateBusy = false;
+let updateProgress: number|null = null;
+function updateControl() {
+  if (updateProgress !== null) return `Installing update… ${updateProgress}%`;
+  const version = `v${esc(appVersion)}`;
+  return availableUpdate
+    ? `${version} · <button class="textbtn" data-action="install-update">Install ${esc(availableUpdate.version)}</button>`
+    : `${version} · <button class="textbtn" data-action="check-updates">Check for updates</button>`;
+}
+// Updates only the footer control so background checks never rebuild the page under the user's typing.
+function setUpdateControl() { const el=document.querySelector('.updatebox'); if(el) el.innerHTML=updateControl(); }
+async function checkForUpdates(manual: boolean) {
+  if (updateBusy || updateProgress !== null) return;
+  updateBusy = true;
+  try {
+    const update = await check();
+    if (update) {
+      availableUpdate = update;
+      setUpdateControl();
+      if (manual) openInstallModal(update);
+      else toast(`Version ${update.version} is available. Install it from the footer.`);
+    } else if (manual) toast('You have the latest version.');
+  } catch (error) {
+    if (manual) failure(error);
+  } finally {
+    updateBusy = false;
+  }
+}
+function currentInstallBlock() {
+  return installBlockReason({ recordingActive: recording.active, saveState: state.saveState, propertySaveState: state.propertySaveState });
+}
+function openInstallModal(update: Update) {
+  const reason = currentInstallBlock();
+  modal(`Install version ${update.version}`, `You are on version ${appVersion}. Sessions, answers, questionnaires, and recordings stay in the same data folder.`,
+    `${update.body ? `<div class="exportlist">${esc(update.body)}</div>` : ''}${reason ? `<p class="hint save-error">${esc(reason)}</p>` : ''}<div class="buttons"><button class="btn" data-action="close">Later</button><button class="btn primary" data-action="confirm-install" ${reason ? 'disabled' : ''}>Download and restart</button></div>`);
+}
+async function installUpdate() {
+  const update = availableUpdate;
+  if (!update || updateBusy) return;
+  const reason = currentInstallBlock();
+  if (reason) throw Error(reason);
+  updateBusy = true;
+  let downloaded = 0, total = 0;
+  closeModal();
+  updateProgress = 0;
+  setUpdateControl();
+  try {
+    await update.downloadAndInstall(event => {
+      if (event.event === 'Started') total = event.data.contentLength ?? 0;
+      else if (event.event === 'Progress') { downloaded += event.data.chunkLength; updateProgress = downloadPercent(downloaded, total) ?? 0; setUpdateControl(); }
+    });
+    await relaunch();
+  } catch (error) {
+    updateProgress = null;
+    updateBusy = false;
+    setUpdateControl();
+    throw error;
+  }
+}
 function groupsModal(){modal('Questionnaires',`Reusable question groups for ${project().name}.`,state.groups.map(g=>`<div class="group"><div><h3>${esc(g.name)}</h3><p>${g.questions.length} question${g.questions.length===1?'':'s'}</p></div><button class="btn quiet" data-action="edit-group" data-id="${g.id}">Edit</button></div>`).join('')+`<div class="buttons"><button class="btn" data-action="close">Done</button><button class="btn primary" data-action="new-group">${icon('plus')}New questionnaire</button></div>`);}
 function editQuestions(mode: 'project'|'session',id?: string){const old=state.groups.find(g=>g.id===id);editor={mode,group:mode==='session'?{id:uid(),projectId:state.projectId,name:current().questionnaireName,questions:structuredClone(current().questions)}:old?structuredClone(old):{id:uid(),projectId:state.projectId,name:'',questions:[{id:uid(),text:'',answer:''}]}};renderEditor();}
 function renderEditor(){
@@ -118,6 +184,9 @@ async function action(button: HTMLButtonElement){
     case 'import':{await flushAll();const paths=await open({multiple:true,directory:false,filters:[{name:'Audio',extensions:['wav','mp3','m4a','aac','ogg','flac','webm','mp4']}]});if(paths){button.textContent='Copying…';try{await invoke('import_audio',{sessionId:current().id,paths:Array.isArray(paths)?paths:[paths]});}finally{await audio();render();}toast('Audio copied into this session');}}break;
     case 'record':if(recording.active){await stopRecording();}else{await flushAll();try{recording=await invoke('start_recording',{sessionId:current().id,deviceId:state.deviceId||null});render();pollRecording();}catch(e){recording=await invoke('recording_status');if(recording.active)pollRecording();await audio();render();throw e;}}break;
     case 'pause':recording=await invoke('pause_recording',{paused:!recording.paused});render();break;
+    case 'check-updates': await checkForUpdates(true); break;
+    case 'install-update': if (availableUpdate) openInstallModal(availableUpdate); break;
+    case 'confirm-install': await installUpdate(); break;
     case 'storage':modal('Local storage','Your research belongs to this computer.',`<p class="hint">Database and original recordings:</p><p class="hint" style="overflow-wrap:anywhere;margin-top:10px">${esc(state.dataDirectory)}</p><p class="hint" style="margin-top:15px">Export all sessions as ZIP to keep a portable copy of your notes, answers, and recordings somewhere separate. This version does not sync to a cloud service.</p><div class="buttons"><button class="btn" data-action="close">Done</button></div>`);break;
     case 'new-project':if(recording.active)throw Error('Stop recording before changing projects.');await flushAll();modal('New project','Its own sessions and reusable questionnaires.',`<form id="projectform"><label class="field">Project name<input id="project-name" required maxlength="200" placeholder="Project name"></label><div class="buttons"><button type="button" class="btn" data-action="close">Cancel</button><button type="submit" class="btn primary">Create project</button></div></form>`);$<HTMLFormElement>('#projectform').onsubmit=async ev=>{ev.preventDefault();const submit=$<HTMLButtonElement>('#projectform button[type=submit]');submit.disabled=true;try{const p=await invoke<Project>('create_project',{name:$<HTMLInputElement>('#project-name').value});state.projects.push(p);closeModal();await chooseProject(p.id);}catch(e){failure(e);submit.disabled=false;}};break;
   }
@@ -244,9 +313,11 @@ async function propertyAction(button:HTMLButtonElement){switch(button.dataset.ac
 
 async function boot(){
   try{
+    appVersion=await getVersion();
     const info=await invoke<{dataDirectory:string;recoveredRecordings:number}>('app_info');state.dataDirectory=info.dataDirectory;
     state.projects=await invoke('projects');const previous=localStorage.getItem('project');await chooseProject(state.projects.find(p=>p.id===previous)?.id??state.projects[0].id);
     if(info.recoveredRecordings)toast(`${info.recoveredRecordings} interrupted recordings recovered`);
+    void checkForUpdates(false);
     let closing=false;
     await getCurrentWindow().onCloseRequested(async ev=>{if(closing)return;ev.preventDefault();try{capturePropertyEditors();$('#app').inert=true;await flushAll();if(recording.active)await stopRecording();closing=true;await getCurrentWindow().destroy();}catch(error){$('#app').inert=false;failure(error);}});
   }catch(error){failure(error);$('#app').innerHTML='<div class="loading">Research could not open local storage. Your existing files have not been deleted. Close and reopen the app after checking the error above.</div>';}
