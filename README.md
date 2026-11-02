@@ -2,6 +2,8 @@
 
 A local desktop notebook for conversations and interviews. Projects, reusable questionnaire groups, sessions, written answers, microphone recordings, and one/many/all session export. No account or hosted service.
 
+**Website:** https://indkhan.github.io/Fieldnote/
+
 ## Download
 
 Get the latest version from **[Releases](https://github.com/indkhan/Fieldnote/releases/latest)**:
