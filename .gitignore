@@ -1,0 +1,14 @@
+node_modules/
+dist/
+src-tauri/target/
+*.log
+.prototype-export.check.zip
+artifacts/
+release/
+src-tauri/gen/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
