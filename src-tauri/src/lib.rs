@@ -1,4 +1,6 @@
 mod export;
+mod handoff;
+mod migrate;
 mod model;
 mod properties;
 #[cfg(test)]
@@ -193,6 +195,19 @@ async fn export_sessions(
 }
 
 #[tauri::command]
+async fn prepare_for_agent(
+    core: AppState<'_>,
+    project_id: String,
+    session_ids: Vec<String>,
+    folder: String,
+) -> Result<handoff::Handoff> {
+    database(&core, move |s| {
+        handoff::prepare(s, &project_id, &session_ids, &PathBuf::from(folder))
+    })
+    .await
+}
+
+#[tauri::command]
 async fn input_devices() -> Result<Vec<recorder::InputDevice>> {
     tauri::async_runtime::spawn_blocking(recorder::input_devices)
         .await
@@ -259,9 +274,17 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            let root = std::env::var_os("RESEARCH_DATA_DIR")
-                .map(PathBuf::from)
-                .unwrap_or(app.path().app_data_dir()?);
+            let root = match std::env::var_os("FIELDNOTE_DATA_DIR") {
+                Some(dir) => PathBuf::from(dir),
+                None => {
+                    let root = app.path().app_data_dir()?;
+                    if let Some(parent) = root.parent() {
+                        let legacy = parent.join(migrate::LEGACY_IDENTIFIER);
+                        migrate::move_legacy_data(&legacy, &root).map_err(std::io::Error::other)?;
+                    }
+                    root
+                }
+            };
             let store = Store::open(&root).map_err(std::io::Error::other)?;
             let recovered = recorder::recover(&store).map_err(std::io::Error::other)?;
             app.asset_protocol_scope()
@@ -293,6 +316,7 @@ pub fn run() {
             session_audio,
             import_audio,
             export_sessions,
+            prepare_for_agent,
             input_devices,
             start_recording,
             recording_status,
@@ -300,5 +324,5 @@ pub fn run() {
             stop_recording
         ])
         .run(tauri::generate_context!())
-        .expect("Research could not start. Your data has not been deleted.");
+        .expect("Fieldnote could not start. Your data has not been deleted.");
 }
