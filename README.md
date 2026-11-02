@@ -2,7 +2,32 @@
 
 A local desktop notebook for founder interviews. Projects, reusable questionnaire groups, sessions, written answers, microphone recordings, and one/many/all session export. No account or hosted service.
 
-The built Windows files are in `release/`: run `Research.exe` directly, or use `Research-0.2.0-setup.exe` to install it for your Windows account.
+## Download
+
+Get the latest version from **[Releases](https://github.com/indkhan/Fieldnote/releases/latest)**:
+
+| System | File | Notes |
+| --- | --- | --- |
+| Windows 10/11 | `Research_*_x64-setup.exe` | Installs for your Windows account. Needs Microsoft Edge WebView2 Runtime (already present on most machines). |
+| macOS (Apple Silicon) | `Research_*_aarch64.dmg` | Drag Research to Applications. |
+| macOS (Intel) | `Research_*_x64.dmg` | Drag Research to Applications. |
+| Linux | `Research_*_amd64.AppImage` or `research_*_amd64.deb` | For AppImage, run `chmod +x` first. Needs WebKitGTK 4.1. |
+
+The macOS builds are not notarized yet. If macOS blocks the first launch, open System Settings → Privacy & Security and choose **Open Anyway**.
+
+### Updates
+
+Research checks for a new release when it starts. Click **Check for updates** in the footer at any time. When a newer version is available, click **Install** in the footer; the update downloads, installs, and restarts the app. Your data is kept. You cannot install while a recording is in progress or while changes are unsaved.
+
+Versions before 0.3.0 do not include the updater. Install 0.3.0 manually once; later updates happen in the app.
+
+### Publishing a release (maintainers)
+
+1. Bump `version` in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`.
+2. Commit, then tag and push: `git tag v0.3.0 && git push origin v0.3.0`.
+3. The `Release` workflow builds Windows, macOS (both architectures), and Linux, signs the update files, and attaches them to the release.
+
+The updater signing key is kept outside the repository. Its public half is in `tauri.conf.json`; the private half is the `TAURI_SIGNING_PRIVATE_KEY` repository secret. Losing it means installed copies can no longer be updated in place.
 
 ## Project overview in 0.2.0
 
@@ -31,13 +56,13 @@ npm ci
 npm run desktop
 ```
 
-Create a release executable and a per-user Windows installer:
+Create a local release build for the current system (Windows installer on Windows; macOS and Linux bundles must be built on those systems or by the release workflow):
 
 ```sh
 npm run desktop:build
 ```
 
-Outputs: `src-tauri/target/release/research-desktop.exe` and `src-tauri/target/release/bundle/nsis/`.
+Outputs: `src-tauri/target/release/bundle/`. Update artifacts are produced only when `TAURI_SIGNING_PRIVATE_KEY` is set; the release workflow sets it from the repository secret.
 
 ```sh
 npm test
@@ -57,7 +82,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 
 ## Storage and sharing
 
-On Windows, the app uses `%APPDATA%/io.moneo.research/`:
+The data folder is `%APPDATA%\io.moneo.research\` on Windows, `~/Library/Application Support/io.moneo.research/` on macOS, and `~/.local/share/io.moneo.research/` on Linux:
 
 For isolated development/acceptance checks, the `RESEARCH_DATA_DIR` environment variable can override this directory before launching the process. Normal launches require no configuration.
 

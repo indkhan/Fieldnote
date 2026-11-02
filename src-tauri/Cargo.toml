@@ -1,6 +1,6 @@
 [package]
 name = "research-desktop"
-version = "0.2.0"
+version = "0.3.0"
 description = "A small local research notebook with questionnaires and audio"
 edition = "2021"
 license = "MIT"
@@ -23,6 +23,8 @@ uuid = { version = "1", features = ["v4"] }
 cpal = "0.18"
 zip = { version = "9.2", default-features = false }
 tempfile = "3"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [profile.release]
 opt-level = "s"

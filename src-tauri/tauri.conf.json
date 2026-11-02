@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Research",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "io.moneo.research",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -33,10 +33,26 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFEOEEwN0NCMDU4MDQ5RDkKUldUWlNZQUZ5d2VLcmVudlRkaTkzai9leWVqZEQ5aVNnNlVkWkx3d3RQVmJRWWloZE5ibUdYSFkK",
+      "endpoints": [
+        "https://github.com/indkhan/Fieldnote/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": [
-      "nsis"
+      "nsis",
+      "dmg",
+      "app",
+      "deb",
+      "appimage"
     ],
     "icon": [
       "icons/icon.ico",
