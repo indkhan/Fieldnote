@@ -132,6 +132,26 @@ function setUpRecordingDemo() {
   }, 100);
 }
 
+function setUpFilm() {
+  const video = document.querySelector('#film-video');
+  const play = document.querySelector('#film-play');
+  if (!video || !play) return;
+  // Without this script the browser's own controls still work, so the film never depends on it.
+  if (matchMedia('(max-width: 640px)').matches) video.poster = 'assets/fieldnote-poster-square.jpg';
+  video.controls = false;
+  play.hidden = false;
+  play.addEventListener('click', () => {
+    play.hidden = true;
+    video.controls = true;
+    video.play().catch(() => {});
+  });
+  video.addEventListener('ended', () => {
+    video.controls = false;
+    video.load();
+    play.hidden = false;
+  });
+}
+
 function setUpNav() {
   const nav = document.querySelector('.nav');
   const update = () => nav.classList.toggle('scrolled', scrollY > 8);
@@ -143,3 +163,4 @@ setUpNav();
 setUpTabs();
 setUpDownloads();
 setUpRecordingDemo();
+setUpFilm();

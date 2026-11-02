@@ -4,6 +4,10 @@ A local desktop notebook for conversations and interviews. Projects, reusable qu
 
 **Website:** https://indkhan.github.io/Fieldnote/
 
+[![A short preview of the Fieldnote video](docs/assets/fieldnote-preview.gif)](https://indkhan.github.io/Fieldnote/assets/fieldnote.mp4)
+
+**[▶ Watch the full video with sound (36 seconds)](https://indkhan.github.io/Fieldnote/assets/fieldnote.mp4)**
+
 ## Download
 
 Get the latest version from **[Releases](https://github.com/indkhan/Fieldnote/releases/latest)**:
