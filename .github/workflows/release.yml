@@ -59,12 +59,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'Research ${{ github.ref_name }}'
+          releaseName: 'Fieldnote ${{ github.ref_name }}'
           releaseBody: |
-            Download the file for your system below. Your existing data is kept, and later updates install from inside the app (footer → Install).
+            Download the file for your system below. Later updates install from inside the app (footer → Install).
 
-            - Windows: `Research_*_x64-setup.exe`
-            - macOS: `Research_*.dmg` (Apple Silicon or Intel). The app is not notarized yet: open it, then allow it in System Settings → Privacy & Security.
+            Research is now called Fieldnote. Close Research before opening Fieldnote for the first time, and your data moves across automatically. You can then uninstall Research.
+
+            - Windows: `Fieldnote_*_x64-setup.exe`
+            - macOS: `Fieldnote_*.dmg` (Apple Silicon or Intel). The app is not notarized yet: open it, then allow it in System Settings → Privacy & Security.
             - Linux: `.AppImage` (run `chmod +x` first) or `.deb`. Requires WebKitGTK 4.1.
           releaseDraft: false
           prerelease: false

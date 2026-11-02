@@ -35,7 +35,7 @@ impl Store {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(err)?;
         if version > 2 {
-            return Err("This workspace requires a newer version of Research.".into());
+            return Err("This workspace requires a newer version of Fieldnote.".into());
         }
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             BEGIN IMMEDIATE;
@@ -53,54 +53,55 @@ impl Store {
             CREATE INDEX IF NOT EXISTS properties_field_number ON session_properties(field_id,number_value,session_id);
             PRAGMA user_version=2;
             COMMIT;").map_err(err)?;
-        let store = Self {
+        Ok(Self {
             conn,
             root: root.to_owned(),
-        };
-        if store.projects()?.is_empty() {
-            let p = store.create_project("Moneo")?;
-            for (name, questions) in [
-                (
-                    "First impressions",
-                    vec![
-                        "What were you trying to do?",
-                        "Where did you get stuck?",
-                        "What would you change?",
-                    ],
-                ),
-                (
-                    "Usability test",
-                    vec![
-                        "What task did you try?",
-                        "What happened as you tried it?",
-                        "What did you expect to happen?",
-                    ],
-                ),
-                (
-                    "Follow-up",
-                    vec![
-                        "Have you used it again since we last spoke?",
-                        "What is working well?",
-                        "What is still frustrating?",
-                    ],
-                ),
-            ] {
-                store.save_questionnaire(Questionnaire {
-                    id: id(),
-                    project_id: p.id.clone(),
-                    name: name.into(),
-                    questions: questions
-                        .into_iter()
-                        .map(|text| Question {
-                            id: id(),
-                            text: text.into(),
-                            answer: String::new(),
-                        })
-                        .collect(),
-                })?;
-            }
+        })
+    }
+
+    fn save_starter_questionnaires(&self, project_id: &str) -> Result<()> {
+        for (name, questions) in [
+            (
+                "General conversation",
+                vec![
+                    "What would you like to talk about today?",
+                    "What is going well?",
+                    "What has been difficult?",
+                    "Is there anything else you would like to add?",
+                ],
+            ),
+            (
+                "Feedback",
+                vec![
+                    "What did you like?",
+                    "What did not work for you?",
+                    "What would you change?",
+                ],
+            ),
+            (
+                "Follow-up",
+                vec![
+                    "What has changed since we last spoke?",
+                    "What is going well?",
+                    "What is still a challenge?",
+                ],
+            ),
+        ] {
+            self.save_questionnaire(Questionnaire {
+                id: id(),
+                project_id: project_id.into(),
+                name: name.into(),
+                questions: questions
+                    .into_iter()
+                    .map(|text| Question {
+                        id: id(),
+                        text: text.into(),
+                        answer: String::new(),
+                    })
+                    .collect(),
+            })?;
         }
-        Ok(store)
+        Ok(())
     }
 
     pub fn projects(&self) -> Result<Vec<Project>> {
@@ -140,6 +141,7 @@ impl Store {
         if name.is_empty() || name.len() > 200 {
             return Err("Enter a project name up to 200 characters.".into());
         }
+        let first = self.projects()?.is_empty();
         let p = Project {
             id: id(),
             name: name.into(),
@@ -150,6 +152,9 @@ impl Store {
                 params![p.id, p.name],
             )
             .map_err(err)?;
+        if first {
+            self.save_starter_questionnaires(&p.id)?;
+        }
         Ok(p)
     }
 
@@ -378,10 +383,27 @@ impl Store {
 mod tests {
     use super::*;
     #[test]
+    fn only_the_first_project_a_person_names_gets_starter_questionnaires() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        assert!(store.projects().unwrap().is_empty());
+        let first = store.create_project("Onboarding").unwrap();
+        let second = store.create_project("Pricing").unwrap();
+        let starters = store.questionnaires(&first.id).unwrap();
+        let names: Vec<_> = starters.iter().map(|q| q.name.as_str()).collect();
+        assert_eq!(names, ["General conversation", "Feedback", "Follow-up"]);
+        assert!(store.questionnaires(&second.id).unwrap().is_empty());
+        drop(store);
+        assert_eq!(
+            Store::open(dir.path()).unwrap().projects().unwrap().len(),
+            2
+        );
+    }
+    #[test]
     fn snapshots_persist_and_search_is_literal() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
-        let p = store.projects().unwrap().remove(0);
+        let p = store.create_project("Test").unwrap();
         let mut g = store.questionnaires(&p.id).unwrap().remove(0);
         let mut s = store
             .create_session(&p.id, Some(&g.id), "2026-11-02")

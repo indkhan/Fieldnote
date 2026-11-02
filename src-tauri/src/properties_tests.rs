@@ -33,7 +33,7 @@ fn query(project: &str, key: &str, direction: &str) -> OverviewQuery {
 fn additive_upgrade_preserves_v1_answers_and_makes_new_fields_optional() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
-    let project = store.projects().unwrap().remove(0);
+    let project = store.create_project("Test").unwrap();
     let group = store.questionnaires(&project.id).unwrap().remove(0);
     let mut session = store
         .create_session(&project.id, Some(&group.id), "2026-11-02")
@@ -93,7 +93,7 @@ fn additive_upgrade_preserves_v1_answers_and_makes_new_fields_optional() {
 fn numeric_select_and_date_sorting_are_typed_with_empty_last_in_both_directions() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
-    let p = store.projects().unwrap().remove(0);
+    let p = store.create_project("Test").unwrap();
     let number = field(&store, &p.id, "Score", FieldType::Number, &[]);
     let select = field(
         &store,
@@ -157,7 +157,7 @@ fn and_filters_search_and_exports_work_across_pages_without_crossing_projects() 
     let dir = tempfile::tempdir().unwrap();
     let out = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
-    let p = store.projects().unwrap().remove(0);
+    let p = store.create_project("Test").unwrap();
     let excitement = field(
         &store,
         &p.id,
@@ -227,7 +227,7 @@ fn and_filters_search_and_exports_work_across_pages_without_crossing_projects() 
 fn invalid_values_and_untrusted_query_fragments_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
-    let p = store.projects().unwrap().remove(0);
+    let p = store.create_project("Test").unwrap();
     let s = store.create_session(&p.id, None, "2026-11-02").unwrap();
     for (kind, bad) in [
         (FieldType::Email, json!("not an email")),

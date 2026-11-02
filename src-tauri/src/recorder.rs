@@ -59,6 +59,17 @@ impl Shared {
         }
         self.stop.store(true, Ordering::Relaxed);
     }
+    fn raise_level(&self, peak: f32) {
+        let _ = self
+            .level
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(f32::from_bits(current).max(peak).to_bits())
+            });
+    }
+    /// Loudest peak since the previous reading, so short sounds between polls still reach the meter.
+    fn take_level(&self) -> f32 {
+        f32::from_bits(self.level.swap(0, Ordering::Relaxed))
+    }
 }
 
 struct Active {
@@ -149,7 +160,7 @@ impl Recorder {
             paused: a.shared.paused.load(Ordering::Relaxed),
             session_id: Some(a.audio.session_id.clone()),
             duration_secs: a.shared.samples.load(Ordering::Relaxed) as f64 / rate as f64,
-            level: f32::from_bits(a.shared.level.load(Ordering::Relaxed)),
+            level: a.shared.take_level(),
             error: a.shared.error.lock().ok().and_then(|e| e.clone()),
         }
     }
@@ -199,6 +210,12 @@ impl Recorder {
     }
 }
 
+/// An xrun only means a few samples were glitched or dropped; the stream keeps delivering audio.
+/// WASAPI commonly reports one as soon as a capture stream starts.
+fn stops_recording(error: &cpal::Error) -> bool {
+    error.kind() != cpal::ErrorKind::Xrun
+}
+
 fn build_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
@@ -231,14 +248,18 @@ where
                     peak = peak.max(sample.abs());
                     mono.push((sample * i16::MAX as f32) as i16)
                 }
-                shared.level.store(peak.to_bits(), Ordering::Relaxed);
+                shared.raise_level(peak);
                 if tx.try_send(mono).is_err() {
                     shared.fail(
                         "Audio could not be saved fast enough. Check available disk space.".into(),
                     )
                 }
             },
-            move |e| error_shared.fail(format!("Microphone error: {e}")),
+            move |e| {
+                if stops_recording(&e) {
+                    error_shared.fail(format!("Microphone error: {e}"))
+                }
+            },
             Some(Duration::from_secs(5)),
         )
         .map_err(|e| format!("Cannot open microphone: {e}"))
@@ -460,6 +481,57 @@ pub fn recover(store: &Store) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Needs a real microphone: `cargo test --lib live_ -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_microphone_writes_samples() {
+        for d in input_devices().unwrap() {
+            println!("device: {} | {}", d.name, d.id);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let project = store.create_project("Test").unwrap();
+        let session = store
+            .create_session(&project.id, None, "2026-11-02")
+            .unwrap();
+        let mut recorder = Recorder::default();
+        recorder.start(&store, &session.id, None).unwrap();
+        thread::sleep(Duration::from_secs(3));
+        let status = recorder.status();
+        println!(
+            "after 3s: duration={} level={} finished={} error={:?}",
+            status.duration_secs, status.level, status.finished, status.error
+        );
+        let audio = recorder.stop(&store).unwrap().unwrap();
+        println!(
+            "saved: {} bytes, {:?}s",
+            audio.byte_length, audio.duration_secs
+        );
+        let wav = std::fs::read(store.managed_path(&audio.relative_path).unwrap()).unwrap();
+        let peak = wav[44..]
+            .chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs())
+            .max();
+        println!("peak sample: {peak:?} of 32767");
+        assert!(audio.byte_length > 44, "only the WAV header was written");
+        assert!(audio.duration_secs.unwrap() > 2.0);
+    }
+
+    #[test]
+    fn level_reports_the_loudest_peak_since_the_last_reading() {
+        let shared = Shared::default();
+        shared.raise_level(0.4);
+        shared.raise_level(0.1);
+        assert_eq!(shared.take_level(), 0.4);
+        assert_eq!(shared.take_level(), 0.0);
+    }
+
+    #[test]
+    fn xruns_do_not_stop_a_recording_but_lost_devices_do() {
+        assert!(!stops_recording(&cpal::ErrorKind::Xrun.into()));
+        assert!(stops_recording(&cpal::ErrorKind::DeviceNotAvailable.into()));
+    }
+
     #[test]
     fn interrupted_audio_is_recovered_from_actual_file_length() {
         let dir = tempfile::tempdir().unwrap();
@@ -492,7 +564,7 @@ mod tests {
     fn startup_recovery_reattaches_interrupted_audio_to_its_session() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
-        let project = store.projects().unwrap().remove(0);
+        let project = store.create_project("Test").unwrap();
         let session = store
             .create_session(&project.id, None, "2026-11-02")
             .unwrap();
