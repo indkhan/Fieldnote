@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="fieldnote-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7782ee"/>
+      <stop offset="1" stop-color="#454fb6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#fieldnote-bg)"/>
+  <path fill="#ffffff" d="M336 176H612L776 340V784a64 64 0 0 1-64 64H336a64 64 0 0 1-64-64V240a64 64 0 0 1 64-64Z"/>
+  <path fill="#c7ccfa" d="M612 176 776 340H660a48 48 0 0 1-48-48Z"/>
+  <g fill="#4d58cc">
+    <rect x="334" y="522" width="52" height="124" rx="26"/>
+    <rect x="412" y="462" width="52" height="244" rx="26"/>
+    <rect x="490" y="396" width="52" height="376" rx="26"/>
+    <rect x="568" y="462" width="52" height="244" rx="26"/>
+    <rect x="646" y="522" width="52" height="124" rx="26"/>
+  </g>
+</svg>
