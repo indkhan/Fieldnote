@@ -71,8 +71,16 @@
         <a class="btn btn-secondary btn-lg" href="https://github.com/indkhan/Fieldnote"><svg class="mark" aria-hidden="true"><use href="#i-github"></use></svg>View the source</a>
       </div>
       <p class="hero-meta">Windows, macOS, and Linux · <a href="#download">All downloads</a></p>
-      <figure class="shot-frame hero-shot">
-        <img src="assets/shots/recording.png" width="2560" height="2120" alt="Fieldnote recording a call with Alex Rivera. A green panel shows Someone is speaking, a seven second timer, and live sound bars.">
+      <figure class="shot-frame hero-shot film" id="film">
+        <video id="film-video" controls preload="none" playsinline poster="assets/fieldnote-poster.jpg" width="1920" height="1080" aria-label="A 36 second film about Fieldnote, with music">
+          <source src="assets/fieldnote-square.mp4" type="video/mp4" media="(max-width: 640px)">
+          <source src="assets/fieldnote.mp4" type="video/mp4">
+          <a href="assets/fieldnote.mp4">Download the Fieldnote video</a>
+        </video>
+        <button class="film-play" id="film-play" type="button" hidden>
+          <span class="film-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg></span>
+          <span class="film-label">Watch the video<small>36 seconds, with sound</small></span>
+        </button>
       </figure>
       <ul class="facts">
         <li><strong>Free and open source</strong><span>MIT licensed, nothing to pay for</span></li>
