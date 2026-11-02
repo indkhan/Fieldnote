@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "fieldnote"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "cpal",
  "rusqlite",

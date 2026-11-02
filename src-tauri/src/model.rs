@@ -141,3 +141,14 @@ pub fn validate_questions(questions: &[Question]) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub id: String,
+    pub session_id: String,
+    pub name: String,
+    pub relative_path: String,
+    pub byte_length: u64,
+    pub caption: String,
+}

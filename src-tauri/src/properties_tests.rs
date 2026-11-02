@@ -214,7 +214,7 @@ fn and_filters_search_and_exports_work_across_pages_without_crossing_projects() 
     let dest = out.path().join("selected.json");
     crate::export::export(&store, &p.id, &ids[..1], "json", &dest).unwrap();
     let export: Value = serde_json::from_slice(&std::fs::read(&dest).unwrap()).unwrap();
-    assert_eq!(export["schemaVersion"], 2);
+    assert_eq!(export["schemaVersion"], 3);
     assert_eq!(export["fieldDefinitions"].as_array().unwrap().len(), 2);
     assert_eq!(export["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(

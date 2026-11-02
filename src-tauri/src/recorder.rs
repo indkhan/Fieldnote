@@ -496,6 +496,18 @@ mod tests {
             .unwrap();
         let mut recorder = Recorder::default();
         recorder.start(&store, &session.id, None).unwrap();
+        store
+            .add_attachment(
+                &session.id,
+                "Screen recording.mp4",
+                &mut vec![42u8; 8 * 1024 * 1024].as_slice(),
+            )
+            .unwrap();
+        let attachment = store.attachments(&session.id).unwrap().remove(0);
+        store
+            .edit_attachment(&session.id, &attachment.id, Some("During recording".into()))
+            .unwrap();
+        assert!(!recorder.status().finished);
         thread::sleep(Duration::from_secs(3));
         let status = recorder.status();
         println!(

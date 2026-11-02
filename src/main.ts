@@ -20,6 +20,7 @@ interface Group { id: string; projectId: string; name: string; questions: Questi
 interface Session { id: string; projectId: string; title: string; person: string; date: string; questionnaireId: string|null; questionnaireName: string; questions: Question[]; notes: string }
 interface Summary { id: string; title: string; person: string; date: string; questionnaireName: string; audioCount: number; values: Values }
 interface Audio { id: string; name: string; path: string; byteLength: number; durationSecs: number|null; status: string }
+interface Attachment { id:string; name:string; path:string; byteLength:number; caption:string }
 interface Device { id: string; name: string }
 interface Recording { active: boolean; finished: boolean; paused: boolean; sessionId: string|null; durationSecs: number; level: number; error: string|null }
 interface Page { sessions: Summary[]; total: number; matching: number }
@@ -29,7 +30,7 @@ const uid = () => crypto.randomUUID();
 const localDate = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 const clock = (seconds: number) => { const n = Math.floor(seconds); return `${n >= 3600 ? Math.floor(n/3600)+':' : ''}${String(Math.floor(n/60)%60).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`; };
 const initials = (name: string) => (name || '?').split(' ').slice(0,2).map(s=>s[0]).join('');
-const state = { projects: [] as Project[], projectId: '', groups: [] as Group[], rows: [] as Summary[], total: 0, matching: 0, query: '', selected: new Set<string>(), page: 'list', session: null as Session|null, audio: [] as Audio[], devices: [] as Device[], deviceId: localStorage.getItem('microphone') || '', dataDirectory: '', saveState: 'saved', propertySaveState: 'saved', fields: [] as ProjectField[], sessionValues: {} as Values, preferences: defaultView(), matchingSelected: 0, propertyCache: new Map<string,Values>() };
+const state = { projects: [] as Project[], projectId: '', groups: [] as Group[], rows: [] as Summary[], total: 0, matching: 0, query: '', selected: new Set<string>(), page: 'list', session: null as Session|null, audio: [] as Audio[], attachments: [] as Attachment[], devices: [] as Device[], deviceId: localStorage.getItem('microphone') || '', dataDirectory: '', saveState: 'saved', propertySaveState: 'saved', fields: [] as ProjectField[], sessionValues: {} as Values, preferences: defaultView(), matchingSelected: 0, propertyCache: new Map<string,Values>() };
 let recording: Recording = { active:false, finished:false, paused:false, sessionId:null, durationSecs:0, level:0, error:null };
 let exportState = { ids: [] as string[], allIds: [] as string[], oneId: '', format: 'zip', preview: [] as Session[], filesOpen: false };
 interface Handoff { folder: string; newCount: number; editedCount: number; unchangedCount: number; prompt: string }
@@ -42,7 +43,7 @@ function toast(message: string) { $('#toast').textContent = message; $('#toast')
 function failure(error: unknown) { const el=$('#error'); el.hidden=false; el.innerHTML=`<span>${esc(error instanceof Error ? error.message : error)}</span><button class="btn quiet" data-action="${(state.saveState==='error'||state.propertySaveState==='error')?'retry-save':'dismiss'}">${(state.saveState==='error'||state.propertySaveState==='error')?'Retry save':'Dismiss'}</button>`; }
 function clearError() { $('#error').hidden=true; }
 function savedStatus() {
-  const states=[state.saveState,state.propertySaveState,...(propertyDrafts.size?['pending']:[])],status=states.includes('error')?'error':states.includes('saving')?'saving':states.includes('pending')?'pending':'saved';
+  const states=[state.saveState,state.propertySaveState,captionSaveState,...(propertyDrafts.size?['pending']:[])],status=states.includes('error')?'error':states.includes('saving')?'saving':states.includes('pending')?'pending':'saved';
   for(const el of document.querySelectorAll('#save-status,#property-save-status')){el.textContent=status==='saved'?'Saved on this computer':status==='error'?'Not saved; retry before closing':status==='saving'?'Saving…':'Unsaved changes';el.className='hint '+(status==='saved'?'saved':status==='error'?'save-error':'');}
 }
 const saves = createSaveQueue(async (session: Session) => { await invoke('save_session',{session}); }, (status: string,error?: unknown) => { state.saveState=status; savedStatus(); if(status==='error')failure(error); },350);
@@ -66,7 +67,7 @@ async function createProject(name: string) {
 }
 async function audio() { state.audio=await invoke('session_audio',{sessionId:current().id}); }
 async function openSession(id: string) {
-  await flushAll();state.session=await invoke('get_session',{sessionId:id});state.sessionValues=await invoke('property_values',{sessionId:id});state.propertyCache.set(id,state.sessionValues);await audio();state.page='form';
+  await flushAll();state.session=await invoke('get_session',{sessionId:id});state.sessionValues=await invoke('property_values',{sessionId:id});state.propertyCache.set(id,state.sessionValues);await audio();await attachments();state.page='form';
   try{state.devices=await invoke('input_devices');}catch{state.devices=[];}render();
 }
 
@@ -88,8 +89,50 @@ function renderList() {
 
 function renderForm() {
   const s=current();
-  return `<button class="back" data-action="back">${icon('back')}All sessions</button><div class="pagehead"><div><h1>${s.title==='Untitled session'?'New session':esc(s.title)}</h1><p>Fill in the answers as you talk.</p></div><button class="btn" data-action="export-one" ${recording.active?'disabled':''}>${icon('export')}Export${agentIcons()}</button></div><div class="form"><div class="fields"><label class="field">Session title<input data-session="title" value="${esc(s.title==='Untitled session'?'':s.title)}" maxlength="1000" placeholder="e.g. Call with Alex"></label><label class="field">Person<input data-session="person" value="${esc(s.person)}" maxlength="1000" placeholder="Who did you talk to?"></label><label class="field">Date<input type="date" data-session="date" value="${esc(s.date)}" required></label></div>${renderProjectFields()}${renderAudio()}<div class="questionnaireline"><label class="field">Questionnaire<select id="questionnaire"><option value="" ${!s.questionnaireId?'selected':''}>Blank form</option>${state.groups.map(g=>`<option value="${g.id}" ${g.id===s.questionnaireId?'selected':''}>${esc(g.name)}</option>`).join('')}</select></label><button class="textbtn" data-action="session-questions">Edit this session’s questions</button></div><div class="questions">${s.questions.map((q,i)=>`<label class="field"><span class="questionlabel"><span class="num">${String(i+1).padStart(2,'0')}</span>${esc(q.text)}</span><textarea data-answer="${q.id}" placeholder="Write their answer, a quote, or what you noticed…">${esc(q.answer)}</textarea></label>`).join('')||'<p class="hint">A blank session works with notes and audio alone. Add questions whenever you need them.</p>'}</div><details class="optional" ${s.notes||!s.questions.length?'open':''}><summary>${s.questions.length?'Additional notes':'Session notes'}</summary><label class="field"><textarea id="notes" aria-label="Additional notes" placeholder="Anything else worth keeping…">${esc(s.notes)}</textarea></label></details><div class="savebar"><span class="hint" id="save-status"></span><button class="btn primary" data-action="back">Done</button></div></div>`;
+  return `<button class="back" data-action="back">${icon('back')}All sessions</button><div class="pagehead"><div><h1>${s.title==='Untitled session'?'New session':esc(s.title)}</h1><p>Fill in the answers as you talk.</p></div><button class="btn" data-action="export-one" ${recording.active?'disabled':''}>${icon('export')}Export${agentIcons()}</button></div><div class="form"><div class="fields"><label class="field">Session title<input data-session="title" value="${esc(s.title==='Untitled session'?'':s.title)}" maxlength="1000" placeholder="e.g. Call with Alex"></label><label class="field">Person<input data-session="person" value="${esc(s.person)}" maxlength="1000" placeholder="Who did you talk to?"></label><label class="field">Date<input type="date" data-session="date" value="${esc(s.date)}" required></label></div>${renderProjectFields()}${renderAudio()}${renderAttachments()}<div class="questionnaireline"><label class="field">Questionnaire<select id="questionnaire"><option value="" ${!s.questionnaireId?'selected':''}>Blank form</option>${state.groups.map(g=>`<option value="${g.id}" ${g.id===s.questionnaireId?'selected':''}>${esc(g.name)}</option>`).join('')}</select></label><button class="textbtn" data-action="session-questions">Edit this session’s questions</button></div><div class="questions">${s.questions.map((q,i)=>`<label class="field"><span class="questionlabel"><span class="num">${String(i+1).padStart(2,'0')}</span>${esc(q.text)}</span><textarea data-answer="${q.id}" placeholder="Write their answer, a quote, or what you noticed…">${esc(q.answer)}</textarea></label>`).join('')||'<p class="hint">A blank session works with notes and audio alone. Add questions whenever you need them.</p>'}</div><details class="optional" ${s.notes||!s.questions.length?'open':''}><summary>${s.questions.length?'Additional notes':'Session notes'}</summary><label class="field"><textarea id="notes" aria-label="Additional notes" placeholder="Anything else worth keeping…">${esc(s.notes)}</textarea></label></details><div class="savebar"><span class="hint" id="save-status"></span><button class="btn primary" data-action="back">Done</button></div></div>`;
 }
+async function attachments() { state.attachments=await invoke('session_attachments',{sessionId:current().id}); }
+function renderAttachments() {
+  return `<section class="audio" id="attachments-panel"><div class="audiohead"><h2>Attachments</h2><button class="btn" data-action="attach">Add files</button></div><p class="hint">Drop any files here or paste a screenshot. Videos and screen recordings are welcome. Audio keeps recording while you add files.</p><div class="attachment-grid">${state.attachments.map(a=>{
+    const ext=a.path.split('.').pop()?.toLowerCase()||'';
+    const url=esc(convertFileSrc(a.path));
+    const preview=['png','jpg','jpeg','gif','webp','bmp','avif'].includes(ext)?`<img src="${url}" alt="${esc(a.caption||a.name)}" loading="lazy">`:['mp4','webm','mov','m4v','ogv'].includes(ext)?`<video controls preload="metadata" src="${url}" aria-label="${esc(a.name)}"></video>`:'';
+    return `<div class="attachment">${preview}<p class="filelabel">${esc(a.name)} ? ${Math.ceil(a.byteLength/1024)} KB</p><label class="field">Caption (optional)<textarea data-caption="${a.id}" maxlength="100000" placeholder="What should we notice?">${esc(a.caption)}</textarea></label><button class="textbtn" data-action="remove-attachment" data-id="${a.id}">Remove</button></div>`;
+  }).join('')}</div></section>`;
+}
+function refreshAttachments() { const panel=document.querySelector('#attachments-panel'); if(panel)panel.outerHTML=renderAttachments(); }
+let attachmentBusy=false;
+async function addAttachments(paths?:string[], files?:File[]) {
+  if(state.page!=='form'||attachmentBusy||actionBusy)return;
+  attachmentBusy=true;
+  const sessionId=current().id;
+  try {
+    if(paths?.length)await invoke('import_attachments',{sessionId,paths});
+    for(const file of files||[])await invoke('paste_attachment',{sessionId,name:file.name,bytes:Array.from(new Uint8Array(await file.arrayBuffer()))});
+    if(state.session?.id===sessionId){await attachments();refreshAttachments();}
+    toast('Files added to session');
+  } catch(error){if(state.session?.id===sessionId){await attachments();refreshAttachments();}failure(error);} finally{attachmentBusy=false;}
+}
+document.addEventListener('paste',ev=>{
+  if(state.page!=='form'||!ev.clipboardData?.files.length)return;
+  ev.preventDefault();void addAttachments(undefined,Array.from(ev.clipboardData.files));
+});
+// WebView file drops use native paths, avoiding loading large videos into JavaScript.
+getCurrentWindow().onDragDropEvent(event=>{
+  if(event.payload.type==='drop')void addAttachments(event.payload.paths);
+}).catch(failure);
+const captionQueues=new Map<string,ReturnType<typeof createSaveQueue>>();
+let captionSaveState='saved';
+async function flushCaptions(){for(const queue of captionQueues.values())await queue.flush();}
+document.addEventListener('input',ev=>{
+  const el=ev.target as HTMLTextAreaElement;
+  const attachmentId=el.dataset.caption;if(!attachmentId)return;
+  const sessionId=current().id;
+  let queue=captionQueues.get(attachmentId);
+  if(!queue){queue=createSaveQueue(async(caption:string)=>{await invoke('edit_attachment',{sessionId,attachmentId,caption});},(status:string,error?:unknown)=>{captionSaveState=status;savedStatus();if(error)failure(error);});captionQueues.set(attachmentId,queue);}
+  const a=state.attachments.find(a=>a.id===attachmentId);if(a)a.caption=el.value;
+  queue.enqueue(el.value);
+});
 const audioKinds={speaking:['Someone is speaking','Your voice is being recorded.'],waiting:['Listening…','Recording. Start talking whenever you are ready.'],'no-sound':['No sound from your microphone','Check that it isn’t muted. You can stop and choose another microphone.'],paused:['Paused','Nothing is being recorded right now.']};
 function takeName(a: Audio,index: number) { return /^Recording-[0-9a-f]{8}\.wav$/.test(a.name)?`Recording ${index+1}`:a.name; }
 function renderTake(a: Audio,index: number) {
@@ -182,7 +225,7 @@ async function loadExportPreview(){exportState.preview=await Promise.all(exportS
 async function exportFinished(){state.selected.clear();await selectionScope();if(state.page==='list')render();}
 function renderExport(){
   const x=exportState,folder=agentFolder();
-  modal(`Export ${x.ids.length} session${x.ids.length===1?'':'s'}`,`Only these sessions from ${project().name} will be included.`,`${x.oneId&&x.allIds.length>1?`<div class="exportscope"><button class="format ${x.ids.length>1?'active':''}" aria-pressed="${x.ids.length>1}" data-action="export-scope" data-scope="all">All sessions (${x.allIds.length})</button><button class="format ${x.ids.length===1?'active':''}" aria-pressed="${x.ids.length===1}" data-action="export-scope" data-scope="one">Only this session</button></div>`:''}<div class="exportlist">${x.preview.map(s=>`<div><strong>${esc(s.title)}</strong> · ${esc(s.person||'No person entered')}</div>`).join('')}${x.ids.length>8?`<div>…and ${x.ids.length-8} more sessions</div>`:''}</div>${!x.oneId&&x.ids.length>1&&!state.selected.size&&!hasFilter()?'<p class="hint" style="margin:-6px 0 14px">To send only a few, tick them in the list first.</p>':''}<section class="agentsend"><h3>${agentIcons()}For Claude Code or Codex</h3><p class="hint">Keeps a folder in your project up to date with your notes and recordings, then gives you one message to paste.</p>${folder?`<div class="agentfolder"><span title="${esc(folder)}">${esc(folder)}</span><button class="textbtn" data-action="agent-folder">Change</button></div>`:''}<button class="btn primary" data-action="agent-prepare">${folder?'Update folder':'Choose your project folder'}</button></section><details class="optional savefile" ${x.filesOpen?'open':''}><summary>Or save a single file</summary><div class="formats">${[{id:'md',name:'Markdown',help:'Notes and answers as text'},{id:'json',name:'JSON',help:'Answers as structured data'},{id:'zip',name:'ZIP + audio',help:'Everything, with recordings'}].map(f=>`<button class="format ${x.format===f.id?'active':''}" aria-pressed="${x.format===f.id}" data-action="format" data-format="${f.id}">${f.name}<small>${f.help}</small></button>`).join('')}</div><p class="hint">${x.format==='zip'?'Includes your recordings.':'Recordings are only included in the ZIP.'}</p><button class="btn" style="margin-top:10px" data-action="download">${icon('export')}Choose location & save</button></details><div class="buttons"><button class="btn" data-action="close">Cancel</button></div>`);
+  modal(`Export ${x.ids.length} session${x.ids.length===1?'':'s'}`,`Only these sessions from ${project().name} will be included.`,`${x.oneId&&x.allIds.length>1?`<div class="exportscope"><button class="format ${x.ids.length>1?'active':''}" aria-pressed="${x.ids.length>1}" data-action="export-scope" data-scope="all">All sessions (${x.allIds.length})</button><button class="format ${x.ids.length===1?'active':''}" aria-pressed="${x.ids.length===1}" data-action="export-scope" data-scope="one">Only this session</button></div>`:''}<div class="exportlist">${x.preview.map(s=>`<div><strong>${esc(s.title)}</strong> · ${esc(s.person||'No person entered')}</div>`).join('')}${x.ids.length>8?`<div>…and ${x.ids.length-8} more sessions</div>`:''}</div>${!x.oneId&&x.ids.length>1&&!state.selected.size&&!hasFilter()?'<p class="hint" style="margin:-6px 0 14px">To send only a few, tick them in the list first.</p>':''}<section class="agentsend"><h3>${agentIcons()}For Claude Code or Codex</h3><p class="hint">Keeps a folder in your project up to date with your notes, recordings, and attachments, then gives you one message to paste.</p>${folder?`<div class="agentfolder"><span title="${esc(folder)}">${esc(folder)}</span><button class="textbtn" data-action="agent-folder">Change</button></div>`:''}<button class="btn primary" data-action="agent-prepare">${folder?'Update folder':'Choose your project folder'}</button></section><details class="optional savefile" ${x.filesOpen?'open':''}><summary>Or save a single file</summary><div class="formats">${[{id:'md',name:'Markdown',help:'Notes and answers as text'},{id:'json',name:'JSON',help:'Answers as structured data'},{id:'zip',name:'ZIP + files',help:'Everything, with recordings and attachments'}].map(f=>`<button class="format ${x.format===f.id?'active':''}" aria-pressed="${x.format===f.id}" data-action="format" data-format="${f.id}">${f.name}<small>${f.help}</small></button>`).join('')}</div><p class="hint">${x.format==='zip'?'Includes recordings and attachments.':'Original recordings and attachments are included in the ZIP.'}</p><button class="btn" style="margin-top:10px" data-action="download">${icon('export')}Choose location & save</button></details><div class="buttons"><button class="btn" data-action="close">Cancel</button></div>`);
 }
 function agentFolder(){return localStorage.getItem('agent-folder:'+state.projectId)||'';}
 async function chooseAgentFolder(){const folder=await open({directory:true,multiple:false,title:'Choose your project folder',defaultPath:agentFolder()||undefined});if(typeof folder!=='string')return '';localStorage.setItem('agent-folder:'+state.projectId,folder);return folder;}
@@ -254,13 +297,15 @@ async function action(button: HTMLButtonElement){
     case 'download':await doExport();break;
     case 'retry-save':await flushAll();clearError();toast('Saved');break;
     case 'dismiss':clearError();break;
+    case 'attach':{const sessionId=current().id;const paths=await open({multiple:true,directory:false});if(paths){try{await invoke('import_attachments',{sessionId,paths:Array.isArray(paths)?paths:[paths]});}finally{await attachments();refreshAttachments();}toast('Files added to session');}}break;
+    case 'remove-attachment':{await invoke('edit_attachment',{sessionId:current().id,attachmentId:button.dataset.id,caption:null});await attachments();refreshAttachments();}break;
     case 'import':{await flushAll();const paths=await open({multiple:true,directory:false,filters:[{name:'Audio',extensions:['wav','mp3','m4a','aac','ogg','flac','webm','mp4']}]});if(paths){button.textContent='Copying…';try{await invoke('import_audio',{sessionId:current().id,paths:Array.isArray(paths)?paths:[paths]});}finally{await audio();render();}toast('Audio copied into this session');}}break;
     case 'record':if(recording.active){await stopRecording();}else{await flushAll();resetMeter();try{recording=await invoke('start_recording',{sessionId:current().id,deviceId:state.deviceId||null});render();pollRecording();}catch(e){recording=await invoke('recording_status');if(recording.active)pollRecording();await audio();render();throw e;}}break;
     case 'pause':recording=await invoke('pause_recording',{paused:!recording.paused});voice.reset();voiceState='waiting';render();break;
     case 'check-updates': await checkForUpdates(true); break;
     case 'install-update': if (availableUpdate) openInstallModal(availableUpdate); break;
     case 'confirm-install': await installUpdate(); break;
-    case 'storage':modal('Saved on this computer','Nothing is uploaded. Your notes and recordings are kept in this folder:',`<p class="hint" style="overflow-wrap:anywhere">${esc(state.dataDirectory)}</p><p class="hint" style="margin-top:15px">To keep a backup, export your sessions as a ZIP.</p><div class="buttons"><button class="btn" data-action="close">Done</button></div>`);break;
+    case 'storage':modal('Saved on this computer','Nothing is uploaded. Your notes, recordings, and attachments are kept in this folder:',`<p class="hint" style="overflow-wrap:anywhere">${esc(state.dataDirectory)}</p><p class="hint" style="margin-top:15px">To keep a backup, export your sessions as a ZIP.</p><div class="buttons"><button class="btn" data-action="close">Done</button></div>`);break;
     case 'new-project':if(recording.active)throw Error('Stop recording before changing projects.');await flushAll();modal('New project','Each project keeps its own sessions and questionnaires.',`<form id="projectform"><label class="field">Project name<input id="project-name" required maxlength="200" placeholder="Project name"></label><div class="buttons"><button type="button" class="btn" data-action="close">Cancel</button><button type="submit" class="btn primary">Create project</button></div></form>`);$<HTMLFormElement>('#projectform').onsubmit=async ev=>{ev.preventDefault();const submit=$<HTMLButtonElement>('#projectform button[type=submit]');submit.disabled=true;try{await createProject($<HTMLInputElement>('#project-name').value);}catch(e){failure(e);submit.disabled=false;}};break;
   }
 }
@@ -302,7 +347,7 @@ document.addEventListener('change',async ev=>{
   }catch(error){failure(error);render();}finally{if(navigating){actionBusy=false;$('#app').inert=false;}}
 });
 document.addEventListener('keydown',ev=>{if(ev.key==='Enter'&&(ev.target as HTMLElement).dataset.property){ev.preventDefault();(ev.target as HTMLInputElement).blur();return;}if(!(ev.ctrlKey||ev.metaKey))return;if(ev.key.toLowerCase()==='s'){ev.preventDefault();flushAll().then(()=>toast('Saved')).catch(failure);}else if(ev.key.toLowerCase()==='f'&&state.page==='list'){ev.preventDefault();document.querySelector<HTMLInputElement>('#search')?.focus();}});
-window.addEventListener('blur',()=>{if(saves.dirty()||propertySaves.dirty())flushAll().catch(failure);});
+window.addEventListener('blur',()=>{if(saves.dirty()||propertySaves.dirty()||[...captionQueues.values()].some(q=>q.dirty()))flushAll().catch(failure);});
 document.addEventListener('focusout',event=>{if((event.target as HTMLElement).dataset.property)setTimeout(()=>refreshAfterProperties().catch(failure),0);});
 // Keep a blur-triggered refresh from replacing the button between pointerdown and click.
 document.addEventListener('pointerdown',()=>{pointerDown=true;},true);
@@ -342,7 +387,7 @@ function capturePropertyEditors(){
   for(const el of editors)commitProperty(el);
 }
 function restorePropertyValidity(){for(const el of document.querySelectorAll<HTMLInputElement|HTMLSelectElement>('[data-property]')){if(propertyDrafts.get(propertyKey(el.dataset.propertySession!,el.dataset.property!))?.bad)el.setCustomValidity('Finish this value or clear it explicitly.');}}
-async function flushAll(){capturePropertyEditors();await saves.flush();await propertySaves.flush();}
+async function flushAll(){capturePropertyEditors();await flushCaptions();await saves.flush();await propertySaves.flush();}
 async function refreshAfterProperties(){if(!needsPropertyRefresh||state.page!=='list'||actionBusy||pointerDown||(document.activeElement as HTMLElement)?.dataset.property)return;await flushAll();if(actionBusy||pointerDown||state.page!=='list'||(document.activeElement as HTMLElement)?.dataset.property)return;needsPropertyRefresh=false;await list();if(actionBusy||pointerDown||state.page!=='list'||(document.activeElement as HTMLElement)?.dataset.property){needsPropertyRefresh=true;return;}render();}
 function renderProjectFields(){if(!state.fields.length)return '';return `<section class="project-fields"><h2>Details</h2><div class="project-field-grid">${state.fields.map(f=>`<label class="field">${esc(f.name)}${propertyControl(f,state.sessionValues,current().id,propertyDrafts.get(propertyKey(current().id,f.id))?.raw,true)}</label>`).join('')}</div><button class="textbtn" style="margin-top:13px" data-action="property-add">+ Add another column</button></section>`;}
 

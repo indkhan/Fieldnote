@@ -29,6 +29,7 @@ fn err(e: impl std::fmt::Display) -> String {
 impl Store {
     pub fn open(root: &Path) -> Result<Self> {
         fs::create_dir_all(root.join("audio")).map_err(err)?;
+        fs::create_dir_all(root.join("attachments")).map_err(err)?;
         let conn = Connection::open(root.join("research.sqlite")).map_err(err)?;
         conn.busy_timeout(Duration::from_secs(5)).map_err(err)?;
         let version: u32 = conn
@@ -45,6 +46,7 @@ impl Store {
             CREATE INDEX IF NOT EXISTS sessions_project_date ON sessions(project_id,date DESC,id);
             CREATE INDEX IF NOT EXISTS questionnaires_project ON questionnaires(project_id);
             CREATE TABLE IF NOT EXISTS audio (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), data TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS audio_session ON audio(session_id);
             CREATE TABLE IF NOT EXISTS project_fields (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, options TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS fields_project ON project_fields(project_id);
@@ -353,7 +355,7 @@ impl Store {
         if path
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))
-            || !path.starts_with("audio")
+            || !(path.starts_with("audio") || path.starts_with("attachments"))
         {
             return Err("Invalid managed audio path.".into());
         }

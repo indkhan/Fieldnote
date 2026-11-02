@@ -130,3 +130,5 @@ Core checks cover questionnaire snapshot persistence after reopening SQLite, pro
 - Actual microphone capture, long-recording stress tests, device unplug/reconnect, installer execution, and release signing have not been validated. The native recorder is implemented; these remain release acceptance checks rather than simulated features.
 
 License: MIT. Dependencies retain their own licenses.
+
+Session attachments: add any file using Add files or drag and drop, or paste screenshots from your clipboard. Images and common video formats have inline previews; playback depends on your system codecs. Captions are optional. Files are copied into local storage and included in ZIP exports and Claude/Codex handoff folders. Adding attachments keeps microphone recording running. Markdown and JSON exports contain attachment metadata only.

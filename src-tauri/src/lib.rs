@@ -1,3 +1,4 @@
+mod attachments;
 mod export;
 mod handoff;
 mod migrate;
@@ -166,6 +167,73 @@ async fn session_audio(core: AppState<'_>, session_id: String) -> Result<Vec<Aud
     })
     .await
 }
+#[derive(serde::Serialize)]
+struct AttachmentFile {
+    #[serde(flatten)]
+    attachment: Attachment,
+    path: String,
+}
+#[tauri::command]
+async fn session_attachments(
+    core: AppState<'_>,
+    session_id: String,
+) -> Result<Vec<AttachmentFile>> {
+    database(&core, move |s| {
+        s.attachments(&session_id)?
+            .into_iter()
+            .map(|attachment| {
+                let path = s
+                    .managed_path(&attachment.relative_path)?
+                    .to_string_lossy()
+                    .into_owned();
+                Ok(AttachmentFile { attachment, path })
+            })
+            .collect()
+    })
+    .await
+}
+#[tauri::command]
+async fn import_attachments(
+    core: AppState<'_>,
+    session_id: String,
+    paths: Vec<String>,
+) -> Result<()> {
+    database(&core, move |s| {
+        for path in paths {
+            let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+                return Err("Choose files, not folders.".into());
+            }
+            s.add_attachment(&session_id, &path, &mut file)?;
+        }
+        Ok(())
+    })
+    .await
+}
+#[tauri::command]
+async fn paste_attachment(
+    core: AppState<'_>,
+    session_id: String,
+    name: String,
+    bytes: Vec<u8>,
+) -> Result<()> {
+    database(&core, move |s| {
+        s.add_attachment(&session_id, &name, &mut bytes.as_slice())
+    })
+    .await
+}
+#[tauri::command]
+async fn edit_attachment(
+    core: AppState<'_>,
+    session_id: String,
+    attachment_id: String,
+    caption: Option<String>,
+) -> Result<()> {
+    database(&core, move |s| {
+        s.edit_attachment(&session_id, &attachment_id, caption)
+    })
+    .await
+}
 #[tauri::command]
 async fn import_audio(
     core: AppState<'_>,
@@ -289,6 +357,8 @@ pub fn run() {
             let recovered = recorder::recover(&store).map_err(std::io::Error::other)?;
             app.asset_protocol_scope()
                 .allow_directory(root.join("audio"), true)?;
+            app.asset_protocol_scope()
+                .allow_directory(root.join("attachments"), true)?;
             app.manage(Arc::new(Core {
                 store: Mutex::new(store),
                 recorder: Mutex::new(recorder::Recorder::default()),
@@ -313,6 +383,10 @@ pub fn run() {
             create_session,
             get_session,
             save_session,
+            session_attachments,
+            import_attachments,
+            paste_attachment,
+            edit_attachment,
             session_audio,
             import_audio,
             export_sessions,
