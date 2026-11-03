@@ -306,3 +306,24 @@ fn bulk_delete_is_atomic_and_removes_media_but_keeps_other_sessions() {
     assert!(store.session(&other.id).is_ok());
     assert!(!media.exists());
 }
+
+#[test]
+fn deleting_project_removes_its_children_and_keeps_other_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let a = store.create_project("Delete").unwrap();
+    let b = store.create_project("Keep").unwrap();
+    let session = store.create_session(&a.id, None, "2026-11-03").unwrap();
+    let other = store.create_session(&b.id, None, "2026-11-03").unwrap();
+    let column = field(&store, &a.id, "Company", FieldType::Text, &[]);
+    store
+        .set_property(&a.id, &session.id, &column.id, json!("Acme"))
+        .unwrap();
+    store.delete_project(&a.id).unwrap();
+    assert!(store.project(&a.id).is_err());
+    assert!(store.session(&session.id).is_err());
+    assert!(store.session(&other.id).is_ok());
+    assert_eq!(store.projects().unwrap().len(), 1);
+    store.delete_project(&b.id).unwrap();
+    assert!(store.projects().unwrap().is_empty());
+}

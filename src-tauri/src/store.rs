@@ -224,6 +224,36 @@ impl Store {
     pub fn delete_sessions(&self, project_id: &str, session_ids: &[String]) -> Result<()> {
         self.project(project_id)?;
         let tx = self.conn.unchecked_transaction().map_err(err)?;
+        let paths = self.delete_session_rows(project_id, session_ids)?;
+        tx.commit().map_err(err)?;
+        Self::remove_media(paths)
+    }
+
+    pub fn delete_project(&self, project_id: &str) -> Result<()> {
+        self.project(project_id)?;
+        let tx = self.conn.unchecked_transaction().map_err(err)?;
+        let paths = self.delete_session_rows(project_id, &self.session_ids(project_id)?)?;
+        tx.execute(
+            "DELETE FROM questionnaires WHERE project_id=?1",
+            [project_id],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "DELETE FROM project_fields WHERE project_id=?1",
+            [project_id],
+        )
+        .map_err(err)?;
+        tx.execute("DELETE FROM projects WHERE id=?1", [project_id])
+            .map_err(err)?;
+        tx.commit().map_err(err)?;
+        Self::remove_media(paths)
+    }
+
+    fn delete_session_rows(
+        &self,
+        project_id: &str,
+        session_ids: &[String],
+    ) -> Result<Vec<PathBuf>> {
         let mut paths = Vec::new();
         for session_id in session_ids {
             if self.session(session_id)?.project_id != project_id {
@@ -236,26 +266,37 @@ impl Store {
                 paths.push(self.managed_path(&attachment.relative_path)?);
             }
             for table in ["session_properties", "audio", "attachments"] {
-                tx.execute(
-                    &format!("DELETE FROM {table} WHERE session_id=?1"),
-                    [session_id],
-                )
-                .map_err(err)?;
+                self.conn
+                    .execute(
+                        &format!("DELETE FROM {table} WHERE session_id=?1"),
+                        [session_id],
+                    )
+                    .map_err(err)?;
             }
-            tx.execute("DELETE FROM sessions WHERE id=?1", [session_id])
+            self.conn
+                .execute("DELETE FROM sessions WHERE id=?1", [session_id])
                 .map_err(err)?;
         }
-        tx.commit().map_err(err)?;
+        Ok(paths)
+    }
+
+    fn remove_media(paths: Vec<PathBuf>) -> Result<()> {
+        let mut errors = Vec::new();
         for path in paths {
             if let Err(error) = fs::remove_file(path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
-                    return Err(format!(
-                        "Sessions removed, but a media file could not be cleaned up: {error}"
-                    ));
+                    errors.push(error.to_string());
                 }
             }
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Data removed, but some media files could not be cleaned up: {}",
+                errors.join("; ")
+            ))
+        }
     }
 
     pub fn questionnaires(&self, project_id: &str) -> Result<Vec<Questionnaire>> {

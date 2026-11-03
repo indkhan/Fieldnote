@@ -73,7 +73,7 @@ async function openSession(id: string) {
 
 function render() {
   if(state.page==='start'){renderStart();return;}
-  $('#app').innerHTML=`<section class="surface"><header class="topbar"><div class="projectbox"><div class="brand">${logo()}Fieldnote</div><span class="divider"></span><select id="project" aria-label="Project" ${recording.active?'disabled':''}>${state.projects.map(p=>`<option value="${p.id}" ${p.id===state.projectId?'selected':''}>${esc(p.name)}</option>`).join('')}</select><button class="textbtn" data-action="new-project" aria-label="Add project" ${recording.active?'disabled':''}>${icon('plus')}</button></div><button class="local" data-action="storage"><i class="dot"></i>On this computer</button></header><div class="content">${state.page==='list'?renderList():renderForm()}</div><footer class="appfooter"><span>No account needed · everything stays on this computer</span><span class="updatebox">${updateControl()}</span></footer></section>`;
+  $('#app').innerHTML=`<section class="surface"><header class="topbar"><div class="projectbox"><div class="brand">${logo()}Fieldnote</div><span class="divider"></span><select id="project" aria-label="Project" ${recording.active?'disabled':''}>${state.projects.map(p=>`<option value="${p.id}" ${p.id===state.projectId?'selected':''}>${esc(p.name)}</option>`).join('')}</select><button class="textbtn" data-action="new-project" aria-label="Add project" ${recording.active?'disabled':''}>${icon('plus')}</button><button class="textbtn" data-action="delete-project" ${recording.active?'disabled':''}>Delete project</button></div><button class="local" data-action="storage"><i class="dot"></i>On this computer</button></header><div class="content">${state.page==='list'?renderList():renderForm()}</div><footer class="appfooter"><span>No account needed · everything stays on this computer</span><span class="updatebox">${updateControl()}</span></footer></section>`;
   if(state.page==='list'){const all=document.querySelector<HTMLInputElement>('#select-all'),n=state.rows.filter(s=>state.selected.has(s.id)).length;if(all)all.indeterminate=n>0&&n<state.rows.length;}else{savedStatus();updateMeter();}savedStatus();restorePropertyValidity();
 }
 function renderStart() {
@@ -273,6 +273,13 @@ function pollRecording(){if(recordTimer)clearInterval(recordTimer);recordTimer=s
 async function action(button: HTMLButtonElement){
   if(button.dataset.action?.startsWith('property-')){await propertyAction(button);return;}
   switch(button.dataset.action){
+    case 'delete-project': {
+      if(recording.active)throw Error('Stop recording before deleting a project.');
+      await flushAll();
+      modal(`Delete ${project().name}?`,`This permanently deletes this project and all ${state.total} sessions, including recordings, attachments, questionnaires, and field values.`,`<div class="buttons"><button class="btn" data-action="close">Cancel</button><button class="btn primary" id="confirm-delete-project">Delete project permanently</button></div>`);
+      $('#confirm-delete-project').onclick=async()=>{const confirm=$<HTMLButtonElement>('#confirm-delete-project');confirm.disabled=true;try{await invoke('delete_project',{projectId:state.projectId});localStorage.removeItem('project');localStorage.removeItem('overview:'+state.projectId);localStorage.removeItem('agent-folder:'+state.projectId);state.projects=await invoke('projects');state.selected.clear();state.session=null;state.projectId='';state.propertyCache.clear();closeModal();if(state.projects.length===1)await chooseProject(state.projects[0].id);else{state.page='start';render();}toast('Project deleted');}catch(error){failure(error);confirm.disabled=false;}};
+      break;
+    }
     case 'delete-session':case 'delete-sessions': {
       if(recording.active)throw Error('Stop recording before deleting sessions.');
       await flushAll();

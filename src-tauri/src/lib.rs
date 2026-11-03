@@ -106,6 +106,19 @@ async fn delete_sessions(
     database(&core, move |s| s.delete_sessions(&project_id, &session_ids)).await
 }
 #[tauri::command]
+async fn delete_project(core: AppState<'_>, project_id: String) -> Result<()> {
+    if core
+        .recorder
+        .lock()
+        .map_err(|_| "Recorder unavailable.")?
+        .status()
+        .active
+    {
+        return Err("Stop recording before deleting a project.".into());
+    }
+    database(&core, move |s| s.delete_project(&project_id)).await
+}
+#[tauri::command]
 async fn questionnaires(core: AppState<'_>, project_id: String) -> Result<Vec<Questionnaire>> {
     database(&core, move |s| s.questionnaires(&project_id)).await
 }
@@ -410,6 +423,7 @@ pub fn run() {
             create_project,
             move_sessions,
             delete_sessions,
+            delete_project,
             questionnaires,
             save_questionnaire,
             session_list,
