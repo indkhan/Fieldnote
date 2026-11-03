@@ -273,6 +273,12 @@ function pollRecording(){if(recordTimer)clearInterval(recordTimer);recordTimer=s
 async function action(button: HTMLButtonElement){
   if(button.dataset.action?.startsWith('property-')){await propertyAction(button);return;}
   switch(button.dataset.action){
+    case 'move-sessions':
+      if(recording.active)throw Error('Stop recording before moving sessions.');
+      await flushAll();
+      modal('Move selected sessions','Answers, notes, recordings, attachments, and field values will be kept.',`<form id="moveform"><label class="field">Destination project<select id="move-destination" required><option value="">Choose a project</option>${state.projects.filter(p=>p.id!==state.projectId).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>${state.projects.length<2?'<p class="hint">Create another project first.</p>':''}<div class="buttons"><button type="button" class="btn" data-action="close">Cancel</button><button class="btn primary" ${state.projects.length<2?'disabled':''}>Move sessions</button></div></form>`);
+      $<HTMLFormElement>('#moveform').onsubmit=async ev=>{ev.preventDefault();const form=$<HTMLFormElement>('#moveform');form.inert=true;try{await invoke('move_sessions',{projectId:state.projectId,sessionIds:[...state.selected],destination:$<HTMLSelectElement>('#move-destination').value});state.selected.clear();state.propertyCache.clear();await list();closeModal();render();toast('Sessions moved');}catch(error){failure(error);form.inert=false;}};
+      break;
     case 'new': await flushAll();{const s=await invoke<Session>('create_session',{projectId:state.projectId,questionnaireId:state.groups[0]?.id??null,date:localDate()});await openSession(s.id);}break;
     case 'start-project': await chooseProject(button.dataset.id!);break;
     case 'open': await openSession(button.dataset.id!);break;

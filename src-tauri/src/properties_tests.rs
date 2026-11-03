@@ -246,3 +246,34 @@ fn invalid_values_and_untrusted_query_fragments_are_rejected() {
         .is_err());
     assert_eq!(store.session(&s.id).unwrap().id, s.id);
 }
+
+#[test]
+fn moves_preserve_content_and_fields_and_reject_wrong_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let a = store.create_project("Source").unwrap();
+    let b = store.create_project("Destination").unwrap();
+    let mut session = store.create_session(&a.id, None, "2026-11-03").unwrap();
+    session.notes = "Keep these notes".into();
+    store.save_session(session.clone()).unwrap();
+    let column = field(&store, &a.id, "Company", FieldType::Text, &[]);
+    store
+        .set_property(&a.id, &session.id, &column.id, json!("Acme"))
+        .unwrap();
+    assert!(store
+        .move_sessions(&b.id, &[session.id.clone()], &a.id)
+        .is_err());
+    assert_eq!(store.session(&session.id).unwrap().project_id, a.id);
+    store
+        .move_sessions(&a.id, &[session.id.clone()], &b.id)
+        .unwrap();
+    let moved = store.session(&session.id).unwrap();
+    assert_eq!(moved.project_id, b.id);
+    assert_eq!(moved.notes, "Keep these notes");
+    assert!(store.session_ids(&a.id).unwrap().is_empty());
+    let target = store.fields(&b.id).unwrap().remove(0);
+    assert_eq!(
+        store.property_values(&session.id).unwrap()[&target.id],
+        json!("Acme")
+    );
+}

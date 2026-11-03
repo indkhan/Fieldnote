@@ -160,6 +160,67 @@ impl Store {
         Ok(p)
     }
 
+    pub fn move_sessions(
+        &self,
+        project_id: &str,
+        session_ids: &[String],
+        destination: &str,
+    ) -> Result<()> {
+        self.project(project_id)?;
+        self.project(destination)?;
+        if project_id == destination || session_ids.is_empty() {
+            return Err("Choose sessions and a different destination project.".into());
+        }
+        let sessions = session_ids
+            .iter()
+            .map(|id| {
+                let session = self.session(id)?;
+                if session.project_id != project_id {
+                    return Err("Session belongs to another project.".into());
+                }
+                Ok(session)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let tx = self.conn.unchecked_transaction().map_err(err)?;
+        let mut fields: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for mut session in sessions {
+            let values = self.property_values(&session.id)?;
+            for source in self.fields(project_id)? {
+                if !values.contains_key(&source.id) {
+                    continue;
+                }
+                let target = if let Some(target) = fields.get(&source.id) {
+                    target.clone()
+                } else {
+                    let mut target = source.clone();
+                    target.id = id();
+                    target.project_id = destination.into();
+                    self.save_field(target.clone())?;
+                    fields.insert(source.id.clone(), target.id.clone());
+                    target.id
+                };
+                tx.execute(
+                    "UPDATE session_properties SET field_id=?1 WHERE session_id=?2 AND field_id=?3",
+                    params![target, session.id, source.id],
+                )
+                .map_err(err)?;
+            }
+            session.project_id = destination.into();
+            session.questionnaire_id = None;
+            tx.execute(
+                "UPDATE sessions SET project_id=?1,data=?2 WHERE id=?3",
+                params![
+                    destination,
+                    serde_json::to_string(&session).map_err(err)?,
+                    session.id
+                ],
+            )
+            .map_err(err)?;
+        }
+        tx.commit().map_err(err)
+    }
+
     pub fn questionnaires(&self, project_id: &str) -> Result<Vec<Questionnaire>> {
         self.project(project_id)?;
         let mut stmt = self
