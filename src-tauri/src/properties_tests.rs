@@ -336,3 +336,26 @@ fn deleting_project_removes_its_children_and_keeps_other_projects() {
     store.delete_project(&b.id).unwrap();
     assert!(store.projects().unwrap().is_empty());
 }
+
+#[test]
+fn moves_reuse_compatible_columns_and_keep_conflicting_types_separate() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let a = store.create_project("Source").unwrap();
+    let b = store.create_project("Destination").unwrap();
+    let source = field(&store, &a.id, "Score", FieldType::Text, &[]);
+    let incompatible = field(&store, &b.id, "Score", FieldType::Number, &[]);
+    for _ in 0..2 {
+        let session = store.create_session(&a.id, None, "2026-11-03").unwrap();
+        store
+            .set_property(&a.id, &session.id, &source.id, json!("Excellent"))
+            .unwrap();
+        store
+            .move_sessions(&a.id, &[session.id.clone()], &b.id)
+            .unwrap();
+        let values = store.property_values(&session.id).unwrap();
+        assert!(!values.contains_key(&incompatible.id));
+        assert_eq!(values.values().next(), Some(&json!("Excellent")));
+    }
+    assert_eq!(store.fields(&b.id).unwrap().len(), 2);
+}

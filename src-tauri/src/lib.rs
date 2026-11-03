@@ -93,7 +93,7 @@ async fn delete_sessions(
     core: AppState<'_>,
     project_id: String,
     session_ids: Vec<String>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     if core
         .recorder
         .lock()
@@ -106,7 +106,7 @@ async fn delete_sessions(
     database(&core, move |s| s.delete_sessions(&project_id, &session_ids)).await
 }
 #[tauri::command]
-async fn delete_project(core: AppState<'_>, project_id: String) -> Result<()> {
+async fn delete_project(core: AppState<'_>, project_id: String) -> Result<Option<String>> {
     if core
         .recorder
         .lock()

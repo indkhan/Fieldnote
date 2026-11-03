@@ -193,12 +193,34 @@ impl Store {
                 let target = if let Some(target) = fields.get(&source.id) {
                     target.clone()
                 } else {
+                    let existing = self.fields(destination)?;
                     let mut target = source.clone();
                     target.id = id();
                     target.project_id = destination.into();
-                    self.save_field(target.clone())?;
-                    fields.insert(source.id.clone(), target.id.clone());
-                    target.id
+                    let mut suffix = 1;
+                    let target_id = loop {
+                        match existing
+                            .iter()
+                            .find(|f| f.name.to_lowercase() == target.name.to_lowercase())
+                        {
+                            Some(field)
+                                if field.kind == source.kind && field.options == source.options =>
+                            {
+                                break field.id.clone()
+                            }
+                            Some(_) => {
+                                target.name = format!(
+                                    "{} (moved {})",
+                                    source.name.chars().take(60).collect::<String>(),
+                                    suffix
+                                );
+                                suffix += 1;
+                            }
+                            None => break self.save_field(target)?.id,
+                        }
+                    };
+                    fields.insert(source.id.clone(), target_id.clone());
+                    target_id
                 };
                 tx.execute(
                     "UPDATE session_properties SET field_id=?1 WHERE session_id=?2 AND field_id=?3",
@@ -221,15 +243,19 @@ impl Store {
         tx.commit().map_err(err)
     }
 
-    pub fn delete_sessions(&self, project_id: &str, session_ids: &[String]) -> Result<()> {
+    pub fn delete_sessions(
+        &self,
+        project_id: &str,
+        session_ids: &[String],
+    ) -> Result<Option<String>> {
         self.project(project_id)?;
         let tx = self.conn.unchecked_transaction().map_err(err)?;
         let paths = self.delete_session_rows(project_id, session_ids)?;
         tx.commit().map_err(err)?;
-        Self::remove_media(paths)
+        Ok(Self::remove_media(paths))
     }
 
-    pub fn delete_project(&self, project_id: &str) -> Result<()> {
+    pub fn delete_project(&self, project_id: &str) -> Result<Option<String>> {
         self.project(project_id)?;
         let tx = self.conn.unchecked_transaction().map_err(err)?;
         let paths = self.delete_session_rows(project_id, &self.session_ids(project_id)?)?;
@@ -246,7 +272,7 @@ impl Store {
         tx.execute("DELETE FROM projects WHERE id=?1", [project_id])
             .map_err(err)?;
         tx.commit().map_err(err)?;
-        Self::remove_media(paths)
+        Ok(Self::remove_media(paths))
     }
 
     fn delete_session_rows(
@@ -280,7 +306,7 @@ impl Store {
         Ok(paths)
     }
 
-    fn remove_media(paths: Vec<PathBuf>) -> Result<()> {
+    fn remove_media(paths: Vec<PathBuf>) -> Option<String> {
         let mut errors = Vec::new();
         for path in paths {
             if let Err(error) = fs::remove_file(path) {
@@ -290,9 +316,9 @@ impl Store {
             }
         }
         if errors.is_empty() {
-            Ok(())
+            None
         } else {
-            Err(format!(
+            Some(format!(
                 "Data removed, but some media files could not be cleaned up: {}",
                 errors.join("; ")
             ))

@@ -277,7 +277,7 @@ async function action(button: HTMLButtonElement){
       if(recording.active)throw Error('Stop recording before deleting a project.');
       await flushAll();
       modal(`Delete ${project().name}?`,`This permanently deletes this project and all ${state.total} session${state.total===1?'':'s'}, including recordings, attachments, questionnaires, and field values.`,`<div class="buttons"><button class="btn" data-action="close">Cancel</button><button class="btn primary" id="confirm-delete-project">Delete project permanently</button></div>`);
-      $('#confirm-delete-project').onclick=async()=>{const confirm=$<HTMLButtonElement>('#confirm-delete-project');confirm.disabled=true;try{await invoke('delete_project',{projectId:state.projectId});localStorage.removeItem('project');localStorage.removeItem('overview:'+state.projectId);localStorage.removeItem('agent-folder:'+state.projectId);state.projects=await invoke('projects');state.selected.clear();state.session=null;state.projectId='';state.propertyCache.clear();closeModal();if(state.projects.length===1)await chooseProject(state.projects[0].id);else{state.page='start';render();}toast('Project deleted');}catch(error){failure(error);confirm.disabled=false;}};
+      $('#confirm-delete-project').onclick=async()=>{const confirm=$<HTMLButtonElement>('#confirm-delete-project');confirm.disabled=true;try{const warning=await invoke<string|null>('delete_project',{projectId:state.projectId});localStorage.removeItem('project');localStorage.removeItem('overview:'+state.projectId);localStorage.removeItem('agent-folder:'+state.projectId);state.projects=await invoke('projects');state.selected.clear();state.session=null;state.projectId='';state.propertyCache.clear();closeModal();if(state.projects.length===1)await chooseProject(state.projects[0].id);else{state.page='start';render();}toast('Project deleted');if(warning)failure(warning);}catch(error){failure(error);confirm.disabled=false;}};
       break;
     }
     case 'delete-session':case 'delete-sessions': {
@@ -286,7 +286,7 @@ async function action(button: HTMLButtonElement){
       const ids=button.dataset.action==='delete-session'?[current().id]:[...state.selected];
       if(!ids.length)throw Error('Select sessions first.');
       modal(`Delete ${ids.length} session${ids.length===1?'':'s'}?`,'This permanently deletes the selected sessions, including answers, recordings, attachments, and field values.',`<div class="buttons"><button class="btn" data-action="close">Cancel</button><button class="btn primary" id="confirm-delete">Delete permanently</button></div>`);
-      $('#confirm-delete').onclick=async()=>{const confirm=$<HTMLButtonElement>('#confirm-delete');confirm.disabled=true;try{await invoke('delete_sessions',{projectId:state.projectId,sessionIds:ids});state.selected.clear();state.session=null;state.page='list';state.propertyCache.clear();await list();closeModal();render();toast('Sessions deleted');}catch(error){failure(error);confirm.disabled=false;}};
+      $('#confirm-delete').onclick=async()=>{const confirm=$<HTMLButtonElement>('#confirm-delete');confirm.disabled=true;try{const warning=await invoke<string|null>('delete_sessions',{projectId:state.projectId,sessionIds:ids});state.selected.clear();state.session=null;state.page='list';state.propertyCache.clear();await list();closeModal();render();toast('Sessions deleted');if(warning)failure(warning);}catch(error){failure(error);confirm.disabled=false;}};
       break;
     }
     case 'move-sessions':
