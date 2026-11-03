@@ -246,3 +246,116 @@ fn invalid_values_and_untrusted_query_fragments_are_rejected() {
         .is_err());
     assert_eq!(store.session(&s.id).unwrap().id, s.id);
 }
+
+#[test]
+fn moves_preserve_content_and_fields_and_reject_wrong_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let a = store.create_project("Source").unwrap();
+    let b = store.create_project("Destination").unwrap();
+    let mut session = store.create_session(&a.id, None, "2026-11-03").unwrap();
+    session.notes = "Keep these notes".into();
+    store.save_session(session.clone()).unwrap();
+    let column = field(&store, &a.id, "Company", FieldType::Text, &[]);
+    store
+        .set_property(&a.id, &session.id, &column.id, json!("Acme"))
+        .unwrap();
+    assert!(store
+        .move_sessions(&b.id, &[session.id.clone()], &a.id)
+        .is_err());
+    assert_eq!(store.session(&session.id).unwrap().project_id, a.id);
+    store
+        .add_attachment(&session.id, "notes.txt", &mut &b"Keep attachment"[..])
+        .unwrap();
+    let attachment = store.attachments(&session.id).unwrap().remove(0);
+    store
+        .move_sessions(&a.id, &[session.id.clone()], &b.id)
+        .unwrap();
+    assert!(store
+        .managed_path(&attachment.relative_path)
+        .unwrap()
+        .exists());
+    assert_eq!(store.attachments(&session.id).unwrap().len(), 1);
+    let moved = store.session(&session.id).unwrap();
+    assert_eq!(moved.project_id, b.id);
+    assert_eq!(moved.notes, "Keep these notes");
+    assert!(store.session_ids(&a.id).unwrap().is_empty());
+    let target = store.fields(&b.id).unwrap().remove(0);
+    assert_eq!(
+        store.property_values(&session.id).unwrap()[&target.id],
+        json!("Acme")
+    );
+}
+
+#[test]
+fn bulk_delete_is_atomic_and_removes_media_but_keeps_other_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let a = store.create_project("Source").unwrap();
+    let b = store.create_project("Other").unwrap();
+    let one = store.create_session(&a.id, None, "2026-11-03").unwrap();
+    let two = store.create_session(&a.id, None, "2026-11-03").unwrap();
+    let other = store.create_session(&b.id, None, "2026-11-03").unwrap();
+    store
+        .add_attachment(&one.id, "notes.txt", &mut &b"Keep me"[..])
+        .unwrap();
+    let media = store
+        .managed_path(&store.attachments(&one.id).unwrap()[0].relative_path)
+        .unwrap();
+    assert!(store
+        .delete_sessions(&a.id, &[one.id.clone(), other.id.clone()])
+        .is_err());
+    assert!(store.session(&one.id).is_ok());
+    assert!(media.exists());
+    store
+        .delete_sessions(&a.id, &[one.id.clone(), two.id.clone()])
+        .unwrap();
+    assert!(store.session(&one.id).is_err());
+    assert!(store.session(&two.id).is_err());
+    assert!(store.session(&other.id).is_ok());
+    assert!(!media.exists());
+}
+
+#[test]
+fn deleting_project_removes_its_children_and_keeps_other_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let a = store.create_project("Delete").unwrap();
+    let b = store.create_project("Keep").unwrap();
+    let session = store.create_session(&a.id, None, "2026-11-03").unwrap();
+    let other = store.create_session(&b.id, None, "2026-11-03").unwrap();
+    let column = field(&store, &a.id, "Company", FieldType::Text, &[]);
+    store
+        .set_property(&a.id, &session.id, &column.id, json!("Acme"))
+        .unwrap();
+    store.delete_project(&a.id).unwrap();
+    assert!(store.project(&a.id).is_err());
+    assert!(store.session(&session.id).is_err());
+    assert!(store.session(&other.id).is_ok());
+    assert_eq!(store.projects().unwrap().len(), 1);
+    store.delete_project(&b.id).unwrap();
+    assert!(store.projects().unwrap().is_empty());
+}
+
+#[test]
+fn moves_reuse_compatible_columns_and_keep_conflicting_types_separate() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let a = store.create_project("Source").unwrap();
+    let b = store.create_project("Destination").unwrap();
+    let source = field(&store, &a.id, "Score", FieldType::Text, &[]);
+    let incompatible = field(&store, &b.id, "Score", FieldType::Number, &[]);
+    for _ in 0..2 {
+        let session = store.create_session(&a.id, None, "2026-11-03").unwrap();
+        store
+            .set_property(&a.id, &session.id, &source.id, json!("Excellent"))
+            .unwrap();
+        store
+            .move_sessions(&a.id, &[session.id.clone()], &b.id)
+            .unwrap();
+        let values = store.property_values(&session.id).unwrap();
+        assert!(!values.contains_key(&incompatible.id));
+        assert_eq!(values.values().next(), Some(&json!("Excellent")));
+    }
+    assert_eq!(store.fields(&b.id).unwrap().len(), 2);
+}

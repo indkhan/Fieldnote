@@ -68,6 +68,57 @@ async fn create_project(core: AppState<'_>, name: String) -> Result<Project> {
     database(&core, move |s| s.create_project(&name)).await
 }
 #[tauri::command]
+async fn move_sessions(
+    core: AppState<'_>,
+    project_id: String,
+    session_ids: Vec<String>,
+    destination: String,
+) -> Result<()> {
+    if core
+        .recorder
+        .lock()
+        .map_err(|_| "Recorder unavailable.")?
+        .status()
+        .active
+    {
+        return Err("Stop recording before moving sessions.".into());
+    }
+    database(&core, move |s| {
+        s.move_sessions(&project_id, &session_ids, &destination)
+    })
+    .await
+}
+#[tauri::command]
+async fn delete_sessions(
+    core: AppState<'_>,
+    project_id: String,
+    session_ids: Vec<String>,
+) -> Result<Option<String>> {
+    if core
+        .recorder
+        .lock()
+        .map_err(|_| "Recorder unavailable.")?
+        .status()
+        .active
+    {
+        return Err("Stop recording before deleting sessions.".into());
+    }
+    database(&core, move |s| s.delete_sessions(&project_id, &session_ids)).await
+}
+#[tauri::command]
+async fn delete_project(core: AppState<'_>, project_id: String) -> Result<Option<String>> {
+    if core
+        .recorder
+        .lock()
+        .map_err(|_| "Recorder unavailable.")?
+        .status()
+        .active
+    {
+        return Err("Stop recording before deleting a project.".into());
+    }
+    database(&core, move |s| s.delete_project(&project_id)).await
+}
+#[tauri::command]
 async fn questionnaires(core: AppState<'_>, project_id: String) -> Result<Vec<Questionnaire>> {
     database(&core, move |s| s.questionnaires(&project_id)).await
 }
@@ -370,6 +421,9 @@ pub fn run() {
             app_info,
             projects,
             create_project,
+            move_sessions,
+            delete_sessions,
+            delete_project,
             questionnaires,
             save_questionnaire,
             session_list,

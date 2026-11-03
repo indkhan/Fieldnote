@@ -160,6 +160,171 @@ impl Store {
         Ok(p)
     }
 
+    pub fn move_sessions(
+        &self,
+        project_id: &str,
+        session_ids: &[String],
+        destination: &str,
+    ) -> Result<()> {
+        self.project(project_id)?;
+        self.project(destination)?;
+        if project_id == destination || session_ids.is_empty() {
+            return Err("Choose sessions and a different destination project.".into());
+        }
+        let sessions = session_ids
+            .iter()
+            .map(|id| {
+                let session = self.session(id)?;
+                if session.project_id != project_id {
+                    return Err("Session belongs to another project.".into());
+                }
+                Ok(session)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let tx = self.conn.unchecked_transaction().map_err(err)?;
+        let mut fields: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for mut session in sessions {
+            let values = self.property_values(&session.id)?;
+            for source in self.fields(project_id)? {
+                if !values.contains_key(&source.id) {
+                    continue;
+                }
+                let target = if let Some(target) = fields.get(&source.id) {
+                    target.clone()
+                } else {
+                    let existing = self.fields(destination)?;
+                    let mut target = source.clone();
+                    target.id = id();
+                    target.project_id = destination.into();
+                    let mut suffix = 1;
+                    let target_id = loop {
+                        match existing
+                            .iter()
+                            .find(|f| f.name.to_lowercase() == target.name.to_lowercase())
+                        {
+                            Some(field)
+                                if field.kind == source.kind && field.options == source.options =>
+                            {
+                                break field.id.clone()
+                            }
+                            Some(_) => {
+                                target.name = format!(
+                                    "{} (moved {})",
+                                    source.name.chars().take(60).collect::<String>(),
+                                    suffix
+                                );
+                                suffix += 1;
+                            }
+                            None => break self.save_field(target)?.id,
+                        }
+                    };
+                    fields.insert(source.id.clone(), target_id.clone());
+                    target_id
+                };
+                tx.execute(
+                    "UPDATE session_properties SET field_id=?1 WHERE session_id=?2 AND field_id=?3",
+                    params![target, session.id, source.id],
+                )
+                .map_err(err)?;
+            }
+            session.project_id = destination.into();
+            session.questionnaire_id = None;
+            tx.execute(
+                "UPDATE sessions SET project_id=?1,data=?2 WHERE id=?3",
+                params![
+                    destination,
+                    serde_json::to_string(&session).map_err(err)?,
+                    session.id
+                ],
+            )
+            .map_err(err)?;
+        }
+        tx.commit().map_err(err)
+    }
+
+    pub fn delete_sessions(
+        &self,
+        project_id: &str,
+        session_ids: &[String],
+    ) -> Result<Option<String>> {
+        self.project(project_id)?;
+        let tx = self.conn.unchecked_transaction().map_err(err)?;
+        let paths = self.delete_session_rows(project_id, session_ids)?;
+        tx.commit().map_err(err)?;
+        Ok(Self::remove_media(paths))
+    }
+
+    pub fn delete_project(&self, project_id: &str) -> Result<Option<String>> {
+        self.project(project_id)?;
+        let tx = self.conn.unchecked_transaction().map_err(err)?;
+        let paths = self.delete_session_rows(project_id, &self.session_ids(project_id)?)?;
+        tx.execute(
+            "DELETE FROM questionnaires WHERE project_id=?1",
+            [project_id],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "DELETE FROM project_fields WHERE project_id=?1",
+            [project_id],
+        )
+        .map_err(err)?;
+        tx.execute("DELETE FROM projects WHERE id=?1", [project_id])
+            .map_err(err)?;
+        tx.commit().map_err(err)?;
+        Ok(Self::remove_media(paths))
+    }
+
+    fn delete_session_rows(
+        &self,
+        project_id: &str,
+        session_ids: &[String],
+    ) -> Result<Vec<PathBuf>> {
+        let mut paths = Vec::new();
+        for session_id in session_ids {
+            if self.session(session_id)?.project_id != project_id {
+                return Err("Session belongs to another project.".into());
+            }
+            for audio in self.audio(session_id)? {
+                paths.push(self.managed_path(&audio.relative_path)?);
+            }
+            for attachment in self.attachments(session_id)? {
+                paths.push(self.managed_path(&attachment.relative_path)?);
+            }
+            for table in ["session_properties", "audio", "attachments"] {
+                self.conn
+                    .execute(
+                        &format!("DELETE FROM {table} WHERE session_id=?1"),
+                        [session_id],
+                    )
+                    .map_err(err)?;
+            }
+            self.conn
+                .execute("DELETE FROM sessions WHERE id=?1", [session_id])
+                .map_err(err)?;
+        }
+        Ok(paths)
+    }
+
+    fn remove_media(paths: Vec<PathBuf>) -> Option<String> {
+        let mut errors = Vec::new();
+        for path in paths {
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    errors.push(error.to_string());
+                }
+            }
+        }
+        if errors.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "Data removed, but some media files could not be cleaned up: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
     pub fn questionnaires(&self, project_id: &str) -> Result<Vec<Questionnaire>> {
         self.project(project_id)?;
         let mut stmt = self
