@@ -431,7 +431,7 @@ async function boot(){
   try{
     appVersion=await getVersion();
     const info=await invoke<{dataDirectory:string;recoveredRecordings:number}>('app_info');state.dataDirectory=info.dataDirectory;
-    state.projects=await invoke('projects');state.page='start';render();
+    state.projects=await invoke('projects');if(state.projects.length===1)await chooseProject(state.projects[0].id);else{state.page='start';render();}
     if(info.recoveredRecordings)toast(`${info.recoveredRecordings} interrupted recordings recovered`);
     void checkForUpdates(false);
     let closing=false;
