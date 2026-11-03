@@ -277,3 +277,32 @@ fn moves_preserve_content_and_fields_and_reject_wrong_project() {
         json!("Acme")
     );
 }
+
+#[test]
+fn bulk_delete_is_atomic_and_removes_media_but_keeps_other_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let a = store.create_project("Source").unwrap();
+    let b = store.create_project("Other").unwrap();
+    let one = store.create_session(&a.id, None, "2026-11-03").unwrap();
+    let two = store.create_session(&a.id, None, "2026-11-03").unwrap();
+    let other = store.create_session(&b.id, None, "2026-11-03").unwrap();
+    store
+        .add_attachment(&one.id, "notes.txt", &mut &b"Keep me"[..])
+        .unwrap();
+    let media = store
+        .managed_path(&store.attachments(&one.id).unwrap()[0].relative_path)
+        .unwrap();
+    assert!(store
+        .delete_sessions(&a.id, &[one.id.clone(), other.id.clone()])
+        .is_err());
+    assert!(store.session(&one.id).is_ok());
+    assert!(media.exists());
+    store
+        .delete_sessions(&a.id, &[one.id.clone(), two.id.clone()])
+        .unwrap();
+    assert!(store.session(&one.id).is_err());
+    assert!(store.session(&two.id).is_err());
+    assert!(store.session(&other.id).is_ok());
+    assert!(!media.exists());
+}

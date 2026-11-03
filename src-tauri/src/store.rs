@@ -221,6 +221,43 @@ impl Store {
         tx.commit().map_err(err)
     }
 
+    pub fn delete_sessions(&self, project_id: &str, session_ids: &[String]) -> Result<()> {
+        self.project(project_id)?;
+        let tx = self.conn.unchecked_transaction().map_err(err)?;
+        let mut paths = Vec::new();
+        for session_id in session_ids {
+            if self.session(session_id)?.project_id != project_id {
+                return Err("Session belongs to another project.".into());
+            }
+            for audio in self.audio(session_id)? {
+                paths.push(self.managed_path(&audio.relative_path)?);
+            }
+            for attachment in self.attachments(session_id)? {
+                paths.push(self.managed_path(&attachment.relative_path)?);
+            }
+            for table in ["session_properties", "audio", "attachments"] {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE session_id=?1"),
+                    [session_id],
+                )
+                .map_err(err)?;
+            }
+            tx.execute("DELETE FROM sessions WHERE id=?1", [session_id])
+                .map_err(err)?;
+        }
+        tx.commit().map_err(err)?;
+        for path in paths {
+            if let Err(error) = fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err(format!(
+                        "Sessions removed, but a media file could not be cleaned up: {error}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn questionnaires(&self, project_id: &str) -> Result<Vec<Questionnaire>> {
         self.project(project_id)?;
         let mut stmt = self
