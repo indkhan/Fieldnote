@@ -265,8 +265,17 @@ fn moves_preserve_content_and_fields_and_reject_wrong_project() {
         .is_err());
     assert_eq!(store.session(&session.id).unwrap().project_id, a.id);
     store
+        .add_attachment(&session.id, "notes.txt", &mut &b"Keep attachment"[..])
+        .unwrap();
+    let attachment = store.attachments(&session.id).unwrap().remove(0);
+    store
         .move_sessions(&a.id, &[session.id.clone()], &b.id)
         .unwrap();
+    assert!(store
+        .managed_path(&attachment.relative_path)
+        .unwrap()
+        .exists());
+    assert_eq!(store.attachments(&session.id).unwrap().len(), 1);
     let moved = store.session(&session.id).unwrap();
     assert_eq!(moved.project_id, b.id);
     assert_eq!(moved.notes, "Keep these notes");
