@@ -138,6 +138,24 @@ impl Store {
             .map_err(|_| "Project not found.".into())
     }
 
+    pub fn rename_project(&self, project_id: &str, name: &str) -> Result<Project> {
+        let name = name.trim();
+        if name.is_empty() || name.len() > 200 {
+            return Err("Enter a project name up to 200 characters.".into());
+        }
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE projects SET name=?2 WHERE id=?1",
+                params![project_id, name],
+            )
+            .map_err(err)?;
+        if changed == 0 {
+            return Err("Project not found.".into());
+        }
+        self.project(project_id)
+    }
+
     pub fn create_project(&self, name: &str) -> Result<Project> {
         let name = name.trim();
         if name.is_empty() || name.len() > 200 {
@@ -396,6 +414,7 @@ impl Store {
                 .map_or("Blank form".into(), |g| g.name.clone()),
             questions: group.map_or(Vec::new(), |g| g.questions),
             notes: String::new(),
+            markers: Vec::new(),
         };
         self.write_session(&s)?;
         Ok(s)
@@ -437,6 +456,7 @@ impl Store {
 
     fn write_session(&self, s: &Session) -> Result<()> {
         validate_questions(&s.questions)?;
+        validate_markers(&s.markers)?;
         if s.title.len() > 1000
             || s.person.len() > 1000
             || s.notes.len() > 2_000_000
@@ -456,11 +476,16 @@ impl Store {
             return Err("This session is too large to save.".into());
         }
         let search = format!(
-            "{} {} {} {} {}",
+            "{} {} {} {} {} {}",
             s.title,
             s.person,
             s.questionnaire_name,
             s.notes,
+            s.markers
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
             s.questions
                 .iter()
                 .map(|q| format!("{} {}", q.text, q.answer))
@@ -595,5 +620,57 @@ mod tests {
         assert!(reopened
             .managed_path("audio/../../research.sqlite")
             .is_err());
+    }
+    #[test]
+    fn marked_moments_are_saved_searchable_and_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let p = store.create_project("Test").unwrap();
+        let mut s = store.create_session(&p.id, None, "2026-11-02").unwrap();
+        assert!(s.markers.is_empty());
+        s.markers.push(Marker {
+            id: id(),
+            audio_id: "take".into(),
+            at_secs: 754.2,
+            text: "Confused by the checkout button".into(),
+        });
+        store.save_session(s.clone()).unwrap();
+        let saved = store.session(&s.id).unwrap();
+        assert_eq!(saved.markers.len(), 1);
+        assert_eq!(saved.markers[0].at_secs, 754.2);
+        assert_eq!(store.list(&p.id, "checkout button", 0).unwrap().sessions.len(), 1);
+        let mut bad = saved.clone();
+        bad.markers[0].at_secs = -1.0;
+        assert!(store.save_session(bad).is_err());
+        let mut duplicate = saved;
+        duplicate.markers.push(duplicate.markers[0].clone());
+        assert!(store.save_session(duplicate).is_err());
+    }
+    #[test]
+    fn sessions_saved_before_marked_moments_still_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let p = store.create_project("Test").unwrap();
+        let s = store.create_session(&p.id, None, "2026-11-02").unwrap();
+        let mut old = serde_json::to_value(&s).unwrap();
+        old.as_object_mut().unwrap().remove("markers");
+        store
+            .conn
+            .execute(
+                "UPDATE sessions SET data=?2 WHERE id=?1",
+                params![s.id, old.to_string()],
+            )
+            .unwrap();
+        assert!(store.session(&s.id).unwrap().markers.is_empty());
+    }
+    #[test]
+    fn projects_can_be_renamed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let p = store.create_project("Old name").unwrap();
+        assert_eq!(store.rename_project(&p.id, "  New name ").unwrap().name, "New name");
+        assert_eq!(store.project(&p.id).unwrap().name, "New name");
+        assert!(store.rename_project(&p.id, "   ").is_err());
+        assert!(store.rename_project("missing", "Name").is_err());
     }
 }

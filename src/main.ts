@@ -17,12 +17,13 @@ import { barHeight, createVoiceActivity } from './recording-meter.mjs';
 interface Question { id: string; text: string; answer: string }
 interface Project { id: string; name: string }
 interface Group { id: string; projectId: string; name: string; questions: Question[] }
-interface Session { id: string; projectId: string; title: string; person: string; date: string; questionnaireId: string|null; questionnaireName: string; questions: Question[]; notes: string }
+interface Marker { id: string; audioId: string; atSecs: number; text: string }
+interface Session { id: string; projectId: string; title: string; person: string; date: string; questionnaireId: string|null; questionnaireName: string; questions: Question[]; notes: string; markers: Marker[] }
 interface Summary { id: string; title: string; person: string; date: string; questionnaireName: string; audioCount: number; values: Values }
 interface Audio { id: string; name: string; path: string; byteLength: number; durationSecs: number|null; status: string }
 interface Attachment { id:string; name:string; path:string; byteLength:number; caption:string }
 interface Device { id: string; name: string }
-interface Recording { active: boolean; finished: boolean; paused: boolean; sessionId: string|null; durationSecs: number; level: number; error: string|null }
+interface Recording { active: boolean; finished: boolean; paused: boolean; sessionId: string|null; audioId: string|null; durationSecs: number; level: number; error: string|null }
 interface Page { sessions: Summary[]; total: number; matching: number }
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector<T>(s)!;
@@ -31,7 +32,7 @@ const localDate = () => { const d = new Date(); return `${d.getFullYear()}-${Str
 const clock = (seconds: number) => { const n = Math.floor(seconds); return `${n >= 3600 ? Math.floor(n/3600)+':' : ''}${String(Math.floor(n/60)%60).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`; };
 const initials = (name: string) => (name || '?').split(' ').slice(0,2).map(s=>s[0]).join('');
 const state = { projects: [] as Project[], projectId: '', groups: [] as Group[], rows: [] as Summary[], total: 0, matching: 0, query: '', selected: new Set<string>(), page: 'list', session: null as Session|null, audio: [] as Audio[], attachments: [] as Attachment[], devices: [] as Device[], deviceId: localStorage.getItem('microphone') || '', dataDirectory: '', saveState: 'saved', propertySaveState: 'saved', fields: [] as ProjectField[], sessionValues: {} as Values, preferences: defaultView(), matchingSelected: 0, propertyCache: new Map<string,Values>() };
-let recording: Recording = { active:false, finished:false, paused:false, sessionId:null, durationSecs:0, level:0, error:null };
+let recording: Recording = { active:false, finished:false, paused:false, sessionId:null, audioId:null, durationSecs:0, level:0, error:null };
 let exportState = { ids: [] as string[], allIds: [] as string[], oneId: '', format: 'zip', preview: [] as Session[], filesOpen: false };
 interface Handoff { folder: string; newCount: number; editedCount: number; unchangedCount: number; prompt: string }
 let editor: { mode: 'project'|'session'; group: Group }|null = null;
@@ -73,8 +74,8 @@ async function openSession(id: string) {
 
 function render() {
   if(state.page==='start'){renderStart();return;}
-  $('#app').innerHTML=`<section class="surface"><header class="topbar"><div class="projectbox"><div class="brand">${logo()}Fieldnote</div><span class="divider"></span><select id="project" aria-label="Project" ${recording.active?'disabled':''}>${state.projects.map(p=>`<option value="${p.id}" ${p.id===state.projectId?'selected':''}>${esc(p.name)}</option>`).join('')}</select><button class="textbtn" data-action="new-project" aria-label="Add project" ${recording.active?'disabled':''}>${icon('plus')}</button><button class="textbtn" data-action="delete-project" ${recording.active?'disabled':''}>Delete project</button></div><button class="local" data-action="storage"><i class="dot"></i>On this computer</button></header><div class="content">${state.page==='list'?renderList():renderForm()}</div><footer class="appfooter"><span>No account needed · everything stays on this computer</span><span class="updatebox">${updateControl()}</span></footer></section>`;
-  if(state.page==='list'){const all=document.querySelector<HTMLInputElement>('#select-all'),n=state.rows.filter(s=>state.selected.has(s.id)).length;if(all)all.indeterminate=n>0&&n<state.rows.length;}else{savedStatus();updateMeter();}savedStatus();restorePropertyValidity();
+  $('#app').innerHTML=`<section class="surface"><header class="topbar"><div class="projectbox"><div class="brand">${logo()}Fieldnote</div><span class="divider"></span><select id="project" aria-label="Project" ${recording.active?'disabled':''}>${state.projects.map(p=>`<option value="${p.id}" ${p.id===state.projectId?'selected':''}>${esc(p.name)}</option>`).join('')}</select><button class="textbtn" data-action="new-project" aria-label="Add project" ${recording.active?'disabled':''}>${icon('plus')}</button><button class="iconbtn" data-action="project-settings" aria-label="Project settings" title="Project settings">${icon('more')}</button></div><button class="local" data-action="storage"><i class="dot"></i>On this computer</button></header><div class="content">${state.page==='list'?renderList():renderForm()}</div><footer class="appfooter"><span>No account needed · everything stays on this computer</span><span class="updatebox">${updateControl()}</span></footer></section>`;
+  if(state.page==='list'){const all=document.querySelector<HTMLInputElement>('#select-all'),n=state.rows.filter(s=>state.selected.has(s.id)).length;if(all)all.indeterminate=n>0&&n<state.rows.length;}else{savedStatus();updateMeter();autosizeAll();}savedStatus();restorePropertyValidity();
 }
 function renderStart() {
   const last=localStorage.getItem('project'),projects=[...state.projects].sort((a,b)=>Number(b.id===last)-Number(a.id===last));
@@ -89,7 +90,7 @@ function renderList() {
 
 function renderForm() {
   const s=current();
-  return `<button class="back" data-action="back">${icon('back')}All sessions</button><div class="pagehead"><div><h1>${s.title==='Untitled session'?'New session':esc(s.title)}</h1><p>Fill in the answers as you talk.</p></div><div class="actions"><button class="btn" data-action="delete-session" ${recording.active?'disabled':''}>Delete session</button><button class="btn" data-action="export-one" ${recording.active?'disabled':''}>${icon('export')}Export${agentIcons()}</button></div></div><div class="form"><div class="fields"><label class="field">Session title<input data-session="title" value="${esc(s.title==='Untitled session'?'':s.title)}" maxlength="1000" placeholder="e.g. Call with Alex"></label><label class="field">Person<input data-session="person" value="${esc(s.person)}" maxlength="1000" placeholder="Who did you talk to?"></label><label class="field">Date<input type="date" data-session="date" value="${esc(s.date)}" required></label></div>${renderProjectFields()}${renderAudio()}${renderAttachments()}<div class="questionnaireline"><label class="field">Questionnaire<select id="questionnaire"><option value="" ${!s.questionnaireId?'selected':''}>Blank form</option>${state.groups.map(g=>`<option value="${g.id}" ${g.id===s.questionnaireId?'selected':''}>${esc(g.name)}</option>`).join('')}</select></label><button class="textbtn" data-action="session-questions">Edit this session’s questions</button></div><div class="questions">${s.questions.map((q,i)=>`<label class="field"><span class="questionlabel"><span class="num">${String(i+1).padStart(2,'0')}</span>${esc(q.text)}</span><textarea data-answer="${q.id}" placeholder="Write their answer, a quote, or what you noticed…">${esc(q.answer)}</textarea></label>`).join('')||'<p class="hint">A blank session works with notes and audio alone. Add questions whenever you need them.</p>'}</div><details class="optional" ${s.notes||!s.questions.length?'open':''}><summary>${s.questions.length?'Additional notes':'Session notes'}</summary><label class="field"><textarea id="notes" aria-label="Additional notes" placeholder="Anything else worth keeping…">${esc(s.notes)}</textarea></label></details><div class="savebar"><span class="hint" id="save-status"></span><button class="btn primary" data-action="back">Done</button></div></div>`;
+  return `<button class="back" data-action="back">${icon('back')}All sessions</button><div class="pagehead"><div><h1>${s.title==='Untitled session'?'New session':esc(s.title)}</h1><p>Fill in the answers as you talk.</p></div><div class="actions"><button class="btn" data-action="delete-session" ${recording.active?'disabled':''}>Delete session</button><button class="btn" data-action="export-one" ${recording.active?'disabled':''}>${icon('export')}Export${agentIcons()}</button></div></div><div class="form"><div class="fields"><label class="field">Session title<input data-session="title" value="${esc(s.title==='Untitled session'?'':s.title)}" maxlength="1000" placeholder="e.g. Call with Alex"></label><label class="field">Person<input data-session="person" value="${esc(s.person)}" maxlength="1000" placeholder="Who did you talk to?"></label><label class="field">Date<input type="date" data-session="date" value="${esc(s.date)}" required></label></div>${recording.active?renderLiveRecording():''}${renderAudio()}<div class="questionnaireline"><label class="field">Questionnaire<select id="questionnaire"><option value="" ${!s.questionnaireId?'selected':''}>Blank form</option>${state.groups.map(g=>`<option value="${g.id}" ${g.id===s.questionnaireId?'selected':''}>${esc(g.name)}</option>`).join('')}</select></label><button class="textbtn" data-action="session-questions">Edit this session’s questions</button></div><div class="questions">${s.questions.map((q,i)=>`<label class="field"><span class="questionlabel"><span class="num">${String(i+1).padStart(2,'0')}</span>${esc(q.text)}</span><textarea data-answer="${q.id}" placeholder="Write their answer, a quote, or what you noticed…">${esc(q.answer)}</textarea></label>`).join('')||'<p class="hint">A blank session works with notes and audio alone. Add questions whenever you need them.</p>'}</div><details class="optional" ${s.notes||!s.questions.length?'open':''}><summary>${s.questions.length?'Additional notes':'Session notes'}</summary><label class="field"><textarea id="notes" aria-label="Additional notes" placeholder="Anything else worth keeping…">${esc(s.notes)}</textarea></label></details>${renderProjectFields()}${renderAttachments()}<div class="savebar"><span class="hint" id="save-status"></span><button class="btn primary" data-action="back">Done</button></div></div>`;
 }
 async function attachments() { state.attachments=await invoke('session_attachments',{sessionId:current().id}); }
 function renderAttachments() {
@@ -97,7 +98,7 @@ function renderAttachments() {
     const ext=a.path.split('.').pop()?.toLowerCase()||'';
     const url=esc(convertFileSrc(a.path));
     const preview=['png','jpg','jpeg','gif','webp','bmp','avif'].includes(ext)?`<img src="${url}" alt="${esc(a.caption||a.name)}" loading="lazy">`:['mp4','webm','mov','m4v','ogv'].includes(ext)?`<video controls preload="metadata" src="${url}" aria-label="${esc(a.name)}"></video>`:'';
-    return `<div class="attachment">${preview}<p class="filelabel">${esc(a.name)} ? ${Math.ceil(a.byteLength/1024)} KB</p><label class="field">Caption (optional)<textarea data-caption="${a.id}" maxlength="100000" placeholder="What should we notice?">${esc(a.caption)}</textarea></label><button class="textbtn" data-action="remove-attachment" data-id="${a.id}">Remove</button></div>`;
+    return `<div class="attachment">${preview}<p class="filelabel">${esc(a.name)} · ${Math.ceil(a.byteLength/1024)} KB</p><label class="field">Caption (optional)<textarea data-caption="${a.id}" maxlength="100000" placeholder="What should we notice?">${esc(a.caption)}</textarea></label><button class="textbtn" data-action="remove-attachment" data-id="${a.id}">Remove</button></div>`;
   }).join('')}</div></section>`;
 }
 function refreshAttachments() { const panel=document.querySelector('#attachments-panel'); if(panel)panel.outerHTML=renderAttachments(); }
@@ -137,17 +138,70 @@ const audioKinds={speaking:['Someone is speaking','Your voice is being recorded.
 function takeName(a: Audio,index: number) { return /^Recording-[0-9a-f]{8}\.wav$/.test(a.name)?`Recording ${index+1}`:a.name; }
 function renderTake(a: Audio,index: number) {
   const empty=a.status!=='failed'&&a.byteLength<=44,note=a.status==='failed'?'This recording could not be finished.':empty?'No sound was captured in this recording.':a.status==='recovered'?'Saved after the app closed unexpectedly.':'',playable=a.status!=='failed'&&!empty;
-  return `<div class="take"><div class="row between"><span class="takename">${esc(takeName(a,index))}</span>${playable&&a.durationSecs!==null?`<span class="timer">${clock(a.durationSecs)}</span>`:''}</div>${note?`<p class="hint">${note}</p>`:''}${playable?`<audio controls preload="metadata" src="${esc(convertFileSrc(a.path))}" aria-label="Play ${esc(takeName(a,index))}"></audio>`:''}</div>`;
+  return `<div class="take"><div class="row between"><span class="takename">${esc(takeName(a,index))}</span>${playable&&a.durationSecs!==null?`<span class="timer">${clock(a.durationSecs)}</span>`:''}</div>${note?`<p class="hint">${note}</p>`:''}${playable?`<audio controls preload="metadata" data-take="${esc(a.id)}" src="${esc(convertFileSrc(a.path))}" aria-label="Play ${esc(takeName(a,index))}"></audio><button class="textbtn takemark" data-action="mark" data-audio="${esc(a.id)}" title="Mark the current playback position (${MARK_KEYS})">+ Mark this moment</button>`:''}<div class="marks" id="marks-${esc(a.id)}">${renderMarks(a.id,playable)}</div></div>`;
 }
 function renderAudio() {
   const takes=state.audio.filter(a=>a.status!=='recording');
-  return `<section class="audio" id="audio-panel"><div class="audiohead"><h2>Audio</h2>${!recording.active&&takes.length?`<span class="chip">${takes.length} recording${takes.length===1?'':'s'}</span>`:''}</div>${takes.map(renderTake).join('')}${recording.active?renderLiveRecording():renderRecordTools()}</section>`;
+  if(recording.active&&!takes.length)return '';
+  return `<section class="audio" id="audio-panel"><div class="audiohead"><h2>Audio</h2>${takes.length?`<span class="chip">${takes.length} recording${takes.length===1?'':'s'}</span>`:''}</div>${takes.map(renderTake).join('')}${recording.active?'':renderRecordTools()}</section>`;
 }
 function renderRecordTools() {
   return `<div class="recordtools"><button class="btn primary" data-action="record">${icon('mic')}Record</button><button class="btn" data-action="import">Import audio</button><select id="microphone" aria-label="Microphone"><option value="">Default microphone</option>${state.devices.map(d=>`<option value="${esc(d.id)}" ${d.id===state.deviceId?'selected':''}>${esc(d.name)}</option>`).join('')}</select></div><p class="hint" style="margin-top:9px">On an online call? This records your microphone only, so import the call’s recording to keep both sides.</p>`;
 }
 function renderLiveRecording() {
-  return `<div class="live"><div class="livehead"><span class="recdot"></span><strong id="live-state"></strong><span class="livetimer" id="elapsed">${clock(recording.durationSecs)}</span></div><div class="voicewave" id="voice-wave" aria-hidden="true">${'<i></i>'.repeat(WAVE_BARS)}</div><p class="hint" id="live-hint" role="status"></p><div class="recordtools"><button class="btn stoprec" data-action="record">${icon('stop')}Stop and save</button><button class="btn" data-action="pause">${recording.paused?'Resume':'Pause'}</button></div></div>`;
+  return `<div class="live" id="live-panel"><div class="livehead"><span class="recdot"></span><strong id="live-state"></strong><div class="voicewave" id="voice-wave" aria-hidden="true">${'<i></i>'.repeat(WAVE_BARS)}</div><span class="livetimer" id="elapsed">${clock(recording.durationSecs)}</span></div><div class="recordtools"><button class="btn" data-action="mark" title="Mark this moment (${MARK_KEYS})">${icon('flag')}Mark moment</button><button class="btn" data-action="pause">${recording.paused?'Resume':'Pause'}</button><button class="btn stoprec" data-action="record">${icon('stop')}Stop and save</button><p class="hint" id="live-hint" role="status"></p></div><div id="live-mark">${renderLiveMark()}</div></div>`;
+}
+
+// Marked moments: a note pinned to a time in one recording, added live or during playback.
+const MARK_KEYS=/Mac|iPhone|iPad/.test(navigator.platform)?'⌘⇧M':'Ctrl+Shift+M';
+let liveMarkId='',lastPlayer:HTMLAudioElement|null=null,lastTyping:HTMLElement|null=null;
+document.addEventListener('play',ev=>{if(ev.target instanceof HTMLAudioElement&&ev.target.dataset.take)lastPlayer=ev.target;},true);
+document.addEventListener('focusin',ev=>{const t=ev.target as HTMLElement;if((t instanceof HTMLTextAreaElement||t instanceof HTMLInputElement)&&!t.dataset.marker&&t.closest('.form'))lastTyping=t;});
+function marksFor(audioId:string){return (state.session?.markers??[]).filter(m=>m.audioId===audioId).sort((a,b)=>a.atSecs-b.atSecs);}
+function markRow(m:Marker,seekable:boolean){return `<div class="markrow"><button class="marktime" data-action="seek" data-audio="${esc(m.audioId)}" data-at="${m.atSecs}" ${seekable?'title="Play from here"':'disabled'}>${clock(m.atSecs)}</button><input data-marker="${esc(m.id)}" value="${esc(m.text)}" maxlength="100000" placeholder="What happened at this moment?" aria-label="Note at ${clock(m.atSecs)}"><button class="markremove" data-action="remove-marker" data-id="${esc(m.id)}" aria-label="Remove mark at ${clock(m.atSecs)}">×</button></div>`;}
+function renderMarks(audioId:string,seekable:boolean){return marksFor(audioId).map(m=>markRow(m,seekable)).join('');}
+function renderLiveMark(){
+  const count=recording.audioId?marksFor(recording.audioId).length:0,latest=state.session?.markers.find(m=>m.id===liveMarkId),marked=`${count} moment${count===1?'':'s'} marked`;
+  if(latest)return `${markRow(latest,false)}<p class="hint">${marked}. Press Enter to go back to where you were typing. You can edit every mark after you stop.</p>`;
+  return `<p class="hint">${count?marked+'. ':''}Press ${MARK_KEYS} to mark a moment without leaving your notes.</p>`;
+}
+function refreshMarks(audioId:string){
+  if(recording.active&&audioId===recording.audioId){const live=document.querySelector('#live-mark');if(live)live.innerHTML=renderLiveMark();return;}
+  const box=document.querySelector(`#marks-${CSS.escape(audioId)}`);if(box)box.innerHTML=renderMarks(audioId,!!document.querySelector(`audio[data-take="${CSS.escape(audioId)}"]`));
+}
+function markTarget(audioId?:string):{audioId:string;at:number}|null{
+  if(recording.active&&recording.audioId&&recording.sessionId===state.session?.id&&(!audioId||audioId===recording.audioId))return {audioId:recording.audioId,at:recording.durationSecs};
+  const players=[...document.querySelectorAll<HTMLAudioElement>('audio[data-take]')];
+  const player=audioId?players.find(p=>p.dataset.take===audioId):players.find(p=>!p.paused)??(lastPlayer?.isConnected?lastPlayer:undefined);
+  return player?{audioId:player.dataset.take!,at:player.currentTime}:null;
+}
+function markMoment(audioId?:string){
+  const target=markTarget(audioId);
+  if(!target){toast(`Start recording or play a recording, then press ${MARK_KEYS} to mark a moment.`);return;}
+  const marker:Marker={id:uid(),audioId:target.audioId,atSecs:Math.round(target.at*10)/10,text:''};
+  current().markers.push(marker);changed();
+  if(recording.active&&target.audioId===recording.audioId)liveMarkId=marker.id;
+  refreshMarks(target.audioId);
+  // Focus after the click handler has made the page interactive again.
+  setTimeout(()=>document.querySelector<HTMLInputElement>(`[data-marker="${CSS.escape(marker.id)}"]`)?.focus(),0);
+}
+function returnFromMark(){(document.activeElement as HTMLElement|null)?.blur();if(lastTyping?.isConnected)lastTyping.focus();}
+function removeMarker(id:string){
+  const s=current(),m=s.markers.find(x=>x.id===id);if(!m)return;
+  s.markers=s.markers.filter(x=>x.id!==id);if(liveMarkId===id)liveMarkId='';changed();refreshMarks(m.audioId);
+}
+async function seekTo(audioId:string,at:number){
+  const player=document.querySelector<HTMLAudioElement>(`audio[data-take="${CSS.escape(audioId)}"]`);if(!player)return;
+  player.currentTime=at;await player.play();
+}
+function autosize(el:HTMLTextAreaElement){if(!el.offsetParent)return;el.style.height='auto';el.style.height=`${el.scrollHeight+2}px`;}
+function autosizeAll(){document.querySelectorAll<HTMLTextAreaElement>('.form textarea').forEach(autosize);}
+document.addEventListener('input',ev=>{if(ev.target instanceof HTMLTextAreaElement&&ev.target.closest('.form'))autosize(ev.target);});
+document.addEventListener('toggle',ev=>{if(ev.target instanceof HTMLDetailsElement)ev.target.querySelectorAll('textarea').forEach(autosize);},true);
+function projectSettingsModal(){
+  const p=project();
+  modal('Project settings','Sessions, questionnaires, and columns stay with the project.',`<form id="renameprojectform"><label class="field">Project name<input id="rename-project" required maxlength="200" value="${esc(p.name)}"></label><div class="buttons"><button type="button" class="btn" data-action="close">Cancel</button><button class="btn primary" type="submit">Save name</button></div></form><div class="dangerzone"><div><h3>Delete this project</h3><p class="hint">Permanently deletes ${state.total} session${state.total===1?'':'s'} with their recordings and attachments.</p></div><button class="btn danger" data-action="delete-project">Delete project…</button></div>`);
+  $<HTMLFormElement>('#renameprojectform').onsubmit=async ev=>{ev.preventDefault();const form=$<HTMLFormElement>('#renameprojectform');form.inert=true;try{const renamed=await invoke<Project>('rename_project',{projectId:p.id,name:$<HTMLInputElement>('#rename-project').value});state.projects=state.projects.map(x=>x.id===renamed.id?renamed:x);closeModal();render();toast('Project renamed');}catch(error){failure(error);form.inert=false;}};
 }
 function modal(title: string,subtitle: string,content: string) { const d=$<HTMLDialogElement>('#dialog');d.innerHTML=`<h2>${esc(title)}</h2><p class="subtitle">${esc(subtitle)}</p>${content}`;if(!d.open)d.showModal(); }
 function closeModal(){ $<HTMLDialogElement>('#dialog').close(); }
@@ -257,7 +311,7 @@ function sampleMeter(){
   if(waveHistory.length>WAVE_BARS)waveHistory.shift();
 }
 function updateMeter(){
-  const time=document.querySelector('#elapsed'),label=document.querySelector('#live-state'),hint=document.querySelector('#live-hint'),panel=document.querySelector<HTMLElement>('#audio-panel'),wave=document.querySelector('#voice-wave');
+  const time=document.querySelector('#elapsed'),label=document.querySelector('#live-state'),hint=document.querySelector('#live-hint'),panel=document.querySelector<HTMLElement>('#live-panel'),wave=document.querySelector('#voice-wave');
   if(time)time.textContent=clock(recording.durationSecs);
   if(!label||!hint||!panel||!wave)return;
   const kind=recording.paused?'paused':voiceState,[title,detail]=audioKinds[kind];
@@ -322,8 +376,12 @@ async function action(button: HTMLButtonElement){
     case 'attach':{const sessionId=current().id;const paths=await open({multiple:true,directory:false});if(paths){try{await invoke('import_attachments',{sessionId,paths:Array.isArray(paths)?paths:[paths]});}finally{await attachments();refreshAttachments();}toast('Files added to session');}}break;
     case 'remove-attachment':{await invoke('edit_attachment',{sessionId:current().id,attachmentId:button.dataset.id,caption:null});await attachments();refreshAttachments();}break;
     case 'import':{await flushAll();const paths=await open({multiple:true,directory:false,filters:[{name:'Audio',extensions:['wav','mp3','m4a','aac','ogg','flac','webm','mp4']}]});if(paths){button.textContent='Copying…';try{await invoke('import_audio',{sessionId:current().id,paths:Array.isArray(paths)?paths:[paths]});}finally{await audio();render();}toast('Audio copied into this session');}}break;
-    case 'record':if(recording.active){await stopRecording();}else{await flushAll();resetMeter();try{recording=await invoke('start_recording',{sessionId:current().id,deviceId:state.deviceId||null});render();pollRecording();}catch(e){recording=await invoke('recording_status');if(recording.active)pollRecording();await audio();render();throw e;}}break;
+    case 'record':if(recording.active){await stopRecording();}else{await flushAll();resetMeter();liveMarkId='';try{recording=await invoke('start_recording',{sessionId:current().id,deviceId:state.deviceId||null});render();pollRecording();}catch(e){recording=await invoke('recording_status');if(recording.active)pollRecording();await audio();render();throw e;}}break;
     case 'pause':recording=await invoke('pause_recording',{paused:!recording.paused});voice.reset();voiceState='waiting';render();break;
+    case 'mark':markMoment(button.dataset.audio);break;
+    case 'seek':await seekTo(button.dataset.audio!,Number(button.dataset.at));break;
+    case 'remove-marker':removeMarker(button.dataset.id!);break;
+    case 'project-settings':projectSettingsModal();break;
     case 'check-updates': await checkForUpdates(true); break;
     case 'install-update': if (availableUpdate) openInstallModal(availableUpdate); break;
     case 'confirm-install': await installUpdate(); break;
@@ -334,7 +392,7 @@ async function action(button: HTMLButtonElement){
 
 document.addEventListener('click',async ev=>{
   const b=(ev.target as Element).closest<HTMLButtonElement>('button[data-action]');if(!b||b.disabled||actionBusy)return;
-  const original=b.innerHTML,skip=['record','pause','close','dismiss'].includes(b.dataset.action!);
+  const original=b.innerHTML,skip=['record','pause','close','dismiss','mark','seek','remove-marker'].includes(b.dataset.action!);
   try{if(!skip)capturePropertyEditors();}catch(error){failure(error);return;}
   b.disabled=true;actionBusy=true;$('#app').inert=true;
   try{if(!skip)await flushAll();await action(b);}catch(error){failure(error);}finally{$('#app').inert=false;actionBusy=false;if(b.isConnected){b.disabled=false;b.innerHTML=original;}}
@@ -348,6 +406,7 @@ document.addEventListener('input',ev=>{
   else if(el.dataset.session){const field=el.dataset.session as 'title'|'person'|'date';current()[field]=field==='title'&&!el.value.trim()?'Untitled session':el.value;changed();}
   else if(el.dataset.answer){current().questions.find(q=>q.id===el.dataset.answer)!.answer=el.value;changed();}
   else if(el.id==='notes'){current().notes=el.value;changed();}
+  else if(el.dataset.marker){const m=state.session?.markers.find(m=>m.id===el.dataset.marker);if(m){m.text=el.value;changed();}}
   else if(el.id==='group-name'&&editor){editor.group.name=el.value;}
   else if(el.dataset.editQuestion&&editor){editor.group.questions.find(q=>q.id===el.dataset.editQuestion)!.text=el.value;}
 });
@@ -368,7 +427,7 @@ document.addEventListener('change',async ev=>{
     else if(el.id==='questionnaire'){await flushAll();const s=current();if(s.questions.some(q=>q.answer.trim())){toast('Answers are already entered. Edit this session’s questions to keep them, or start another session.');render();return;}const g=state.groups.find(g=>g.id===el.value);s.questionnaireId=g?.id??null;s.questionnaireName=g?.name??'Blank form';s.questions=(g?.questions??[]).map(q=>({...q,answer:''}));changed();await flushAll();render();}
   }catch(error){failure(error);render();}finally{if(navigating){actionBusy=false;$('#app').inert=false;}}
 });
-document.addEventListener('keydown',ev=>{if(ev.key==='Enter'&&(ev.target as HTMLElement).dataset.property){ev.preventDefault();(ev.target as HTMLInputElement).blur();return;}if(!(ev.ctrlKey||ev.metaKey))return;if(ev.key.toLowerCase()==='s'){ev.preventDefault();flushAll().then(()=>toast('Saved')).catch(failure);}else if(ev.key.toLowerCase()==='f'&&state.page==='list'){ev.preventDefault();document.querySelector<HTMLInputElement>('#search')?.focus();}});
+document.addEventListener('keydown',ev=>{const target=ev.target as HTMLElement;if((ev.key==='Enter'||ev.key==='Escape')&&target.dataset.marker){ev.preventDefault();returnFromMark();return;}if(ev.key==='Enter'&&target.dataset.property){ev.preventDefault();(ev.target as HTMLInputElement).blur();return;}if(!(ev.ctrlKey||ev.metaKey))return;if(ev.shiftKey&&ev.key.toLowerCase()==='m'){ev.preventDefault();if(state.page==='form'&&!actionBusy)markMoment();return;}if(ev.key.toLowerCase()==='s'){ev.preventDefault();flushAll().then(()=>toast('Saved')).catch(failure);}else if(ev.key.toLowerCase()==='f'&&state.page==='list'){ev.preventDefault();document.querySelector<HTMLInputElement>('#search')?.focus();}});
 window.addEventListener('blur',()=>{if(saves.dirty()||propertySaves.dirty()||[...captionQueues.values()].some(q=>q.dirty()))flushAll().catch(failure);});
 document.addEventListener('focusout',event=>{if((event.target as HTMLElement).dataset.property)setTimeout(()=>refreshAfterProperties().catch(failure),0);});
 // Keep a blur-triggered refresh from replacing the button between pointerdown and click.

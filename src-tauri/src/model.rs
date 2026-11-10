@@ -36,6 +36,35 @@ pub struct Session {
     pub questionnaire_name: String,
     pub questions: Vec<Question>,
     pub notes: String,
+    /// Timestamped notes tied to a moment in one of the session's recordings.
+    #[serde(default)]
+    pub markers: Vec<Marker>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Marker {
+    pub id: String,
+    pub audio_id: String,
+    pub at_secs: f64,
+    #[serde(default)]
+    pub text: String,
+}
+
+pub fn validate_markers(markers: &[Marker]) -> Result<(), String> {
+    if markers.len() > 5000 {
+        return Err("A session can have at most 5000 marked moments.".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    for m in markers {
+        if m.id.is_empty() || !ids.insert(&m.id) || m.audio_id.is_empty() {
+            return Err("Each marked moment needs a unique ID and a recording.".into());
+        }
+        if !m.at_secs.is_finite() || m.at_secs < 0.0 || m.text.len() > 100_000 {
+            return Err("A marked moment has an invalid time or is too long.".into());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

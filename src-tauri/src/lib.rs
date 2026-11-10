@@ -64,6 +64,10 @@ async fn projects(core: AppState<'_>) -> Result<Vec<Project>> {
     database(&core, |s| s.projects()).await
 }
 #[tauri::command]
+async fn rename_project(core: AppState<'_>, project_id: String, name: String) -> Result<Project> {
+    database(&core, move |s| s.rename_project(&project_id, &name)).await
+}
+#[tauri::command]
 async fn create_project(core: AppState<'_>, name: String) -> Result<Project> {
     database(&core, move |s| s.create_project(&name)).await
 }
@@ -420,6 +424,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             projects,
+            rename_project,
             create_project,
             move_sessions,
             delete_sessions,

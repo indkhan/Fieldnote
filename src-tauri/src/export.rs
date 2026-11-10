@@ -105,16 +105,55 @@ pub fn session_markdown(data: &Export, item: &ExportSession) -> String {
                 "- {} — `{}` ({})\n",
                 a.name, a.relative_path, a.status
             ));
+            for m in sorted_markers(&s.markers, &a.id) {
+                text.push_str(&marker_line(m, "  "));
+            }
+        }
+        let orphans: Vec<&Marker> = s
+            .markers
+            .iter()
+            .filter(|m| !item.audio.iter().any(|a| a.id == m.audio_id))
+            .collect();
+        if !orphans.is_empty() {
+            text.push_str("\nMarked moments in recordings that are not included:\n");
+            for m in orphans {
+                text.push_str(&marker_line(m, ""));
+            }
         }
     }
     text.push_str("\n### Attachments\n\n");
     for a in &item.attachments {
         text.push_str(&format!(
-            "- {} ? `{}`\n  {}\n",
+            "- {} · `{}`\n  {}\n",
             a.name, a.relative_path, a.caption
         ));
     }
     text
+}
+
+fn sorted_markers<'a>(markers: &'a [Marker], audio_id: &str) -> Vec<&'a Marker> {
+    let mut list: Vec<&Marker> = markers.iter().filter(|m| m.audio_id == audio_id).collect();
+    list.sort_by(|a, b| a.at_secs.total_cmp(&b.at_secs));
+    list
+}
+
+/// Formats seconds as `mm:ss`, or `h:mm:ss` from one hour.
+pub fn clock(secs: f64) -> String {
+    let n = secs.max(0.0).floor() as u64;
+    if n >= 3600 {
+        format!("{}:{:02}:{:02}", n / 3600, n / 60 % 60, n % 60)
+    } else {
+        format!("{:02}:{:02}", n / 60, n % 60)
+    }
+}
+
+fn marker_line(m: &Marker, indent: &str) -> String {
+    let note = m.text.trim().replace('\n', " ");
+    format!(
+        "{indent}- [{}] {}\n",
+        clock(m.at_secs),
+        if note.is_empty() { "(Marked, no note)" } else { &note }
+    )
 }
 
 pub fn collect(store: &Store, project_id: &str, ids: &[String]) -> Result<Export> {
@@ -302,6 +341,43 @@ pub fn import_audio(store: &Store, session_id: &str, paths: &[String]) -> Result
 mod tests {
     use super::*;
     use std::io::Read;
+    #[test]
+    fn markdown_lists_marked_moments_under_their_recording_in_time_order() {
+        let data = tempfile::tempdir().unwrap();
+        let store = Store::open(data.path()).unwrap();
+        let project = store.create_project("Test").unwrap();
+        let mut session = store
+            .create_session(&project.id, None, "2026-11-02")
+            .unwrap();
+        let audio = Audio {
+            id: id(),
+            session_id: session.id.clone(),
+            name: "Call.wav".into(),
+            relative_path: "audio/call.wav".into(),
+            byte_length: 0,
+            duration_secs: None,
+            status: "failed".into(),
+        };
+        store.save_audio(&audio).unwrap();
+        let marker = |audio_id: &str, at_secs: f64, text: &str| Marker {
+            id: id(),
+            audio_id: audio_id.into(),
+            at_secs,
+            text: text.into(),
+        };
+        session.markers = vec![
+            marker(&audio.id, 3725.0, "Late\nquote"),
+            marker(&audio.id, 65.9, ""),
+            marker("gone", 5.0, "From a removed take"),
+        ];
+        store.save_session(session.clone()).unwrap();
+        let data = collect(&store, &project.id, &[session.id]).unwrap();
+        let text = session_markdown(&data, &data.sessions[0]);
+        let early = text.find("  - [01:05] (Marked, no note)").unwrap();
+        let late = text.find("  - [1:02:05] Late quote").unwrap();
+        assert!(text.find("Call.wav").unwrap() < early && early < late);
+        assert!(text.contains("not included:\n- [00:05] From a removed take"));
+    }
     #[test]
     fn failed_capture_does_not_block_export_but_missing_real_audio_does() {
         let data = tempfile::tempdir().unwrap();
