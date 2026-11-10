@@ -1,6 +1,6 @@
 [package]
 name = "fieldnote"
-version = "0.5.1"
+version = "0.6.0"
 description = "A local notebook for conversations, with questionnaires and audio"
 edition = "2021"
 license = "MIT"
