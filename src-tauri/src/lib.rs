@@ -1,4 +1,5 @@
 mod attachments;
+mod consent_documents;
 mod export;
 mod handoff;
 mod migrate;
@@ -443,6 +444,9 @@ pub fn run() {
             get_session,
             save_session,
             session_attachments,
+            consent_documents::save_consent_document,
+            consent_documents::read_consent_document,
+            consent_documents::save_consent_copy,
             import_attachments,
             paste_attachment,
             edit_attachment,
