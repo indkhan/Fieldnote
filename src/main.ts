@@ -1,6 +1,7 @@
 import './style.css';
 import './overview.css';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { createSaveQueue } from './save-queue.mjs';
@@ -178,12 +179,32 @@ function markTarget(audioId?:string):{audioId:string;at:number}|null{
 function markMoment(audioId?:string){
   const target=markTarget(audioId);
   if(!target){toast(`Start recording or play a recording, then press ${MARK_KEYS} to mark a moment.`);return;}
+  addMark(target,true);
+}
+function addMark(target:{audioId:string;at:number},focus:boolean){
   const marker:Marker={id:uid(),audioId:target.audioId,atSecs:Math.round(target.at*10)/10,text:''};
   current().markers.push(marker);changed();
   if(recording.active&&target.audioId===recording.audioId)liveMarkId=marker.id;
   refreshMarks(target.audioId);
   // Focus after the click handler has made the page interactive again.
-  setTimeout(()=>document.querySelector<HTMLInputElement>(`[data-marker="${CSS.escape(marker.id)}"]`)?.focus(),0);
+  if(focus)setTimeout(()=>document.querySelector<HTMLInputElement>(`[data-marker="${CSS.escape(marker.id)}"]`)?.focus(),0);
+}
+function markFromShortcut(){
+  if(state.page!=='form'||actionBusy)return;
+  const sessionId=state.session?.id;
+  const audioId=recording.active?recording.audioId:null;
+  void invoke<boolean>('global_bookmark_ready').catch(()=>false).then(ready=>{
+    if(!ready&&state.page==='form'&&state.session?.id===sessionId&&!actionBusy&&(!audioId||(recording.active&&recording.audioId===audioId)))markMoment();
+  });
+}
+type ShortcutBookmark=Pick<Recording,'audioId'|'sessionId'|'durationSecs'>;
+function onGlobalBookmark(status:ShortcutBookmark|null){
+  if(state.page!=='form')return;
+  if(!status){
+    if(document.hasFocus()&&!actionBusy&&!recording.active)markMoment();
+    return;
+  }
+  if(status.audioId&&status.sessionId===state.session?.id)addMark({audioId:status.audioId,at:status.durationSecs},false);
 }
 function returnFromMark(){(document.activeElement as HTMLElement|null)?.blur();if(lastTyping?.isConnected)lastTyping.focus();}
 function removeMarker(id:string){
@@ -427,7 +448,7 @@ document.addEventListener('change',async ev=>{
     else if(el.id==='questionnaire'){await flushAll();const s=current();if(s.questions.some(q=>q.answer.trim())){toast('Answers are already entered. Edit this session’s questions to keep them, or start another session.');render();return;}const g=state.groups.find(g=>g.id===el.value);s.questionnaireId=g?.id??null;s.questionnaireName=g?.name??'Blank form';s.questions=(g?.questions??[]).map(q=>({...q,answer:''}));changed();await flushAll();render();}
   }catch(error){failure(error);render();}finally{if(navigating){actionBusy=false;$('#app').inert=false;}}
 });
-document.addEventListener('keydown',ev=>{const target=ev.target as HTMLElement;if((ev.key==='Enter'||ev.key==='Escape')&&target.dataset.marker){ev.preventDefault();returnFromMark();return;}if(ev.key==='Enter'&&target.dataset.property){ev.preventDefault();(ev.target as HTMLInputElement).blur();return;}if(!(ev.ctrlKey||ev.metaKey))return;if(ev.shiftKey&&ev.key.toLowerCase()==='m'){ev.preventDefault();if(state.page==='form'&&!actionBusy)markMoment();return;}if(ev.key.toLowerCase()==='s'){ev.preventDefault();flushAll().then(()=>toast('Saved')).catch(failure);}else if(ev.key.toLowerCase()==='f'&&state.page==='list'){ev.preventDefault();document.querySelector<HTMLInputElement>('#search')?.focus();}});
+document.addEventListener('keydown',ev=>{const target=ev.target as HTMLElement;if((ev.key==='Enter'||ev.key==='Escape')&&target.dataset.marker){ev.preventDefault();returnFromMark();return;}if(ev.key==='Enter'&&target.dataset.property){ev.preventDefault();(ev.target as HTMLInputElement).blur();return;}if(!(ev.ctrlKey||ev.metaKey))return;if(ev.shiftKey&&ev.key.toLowerCase()==='m'){ev.preventDefault();if(!ev.repeat)markFromShortcut();return;}if(ev.key.toLowerCase()==='s'){ev.preventDefault();flushAll().then(()=>toast('Saved')).catch(failure);}else if(ev.key.toLowerCase()==='f'&&state.page==='list'){ev.preventDefault();document.querySelector<HTMLInputElement>('#search')?.focus();}});
 window.addEventListener('blur',()=>{if(saves.dirty()||propertySaves.dirty()||[...captionQueues.values()].some(q=>q.dirty()))flushAll().catch(failure);});
 document.addEventListener('focusout',event=>{if((event.target as HTMLElement).dataset.property)setTimeout(()=>refreshAfterProperties().catch(failure),0);});
 // Keep a blur-triggered refresh from replacing the button between pointerdown and click.
@@ -511,6 +532,7 @@ async function propertyAction(button:HTMLButtonElement){switch(button.dataset.ac
 async function boot(){
   try{
     appVersion=await getVersion();
+    await listen<ShortcutBookmark|null>('recording-bookmark',event=>onGlobalBookmark(event.payload));
     const info=await invoke<{dataDirectory:string;recoveredRecordings:number}>('app_info');state.dataDirectory=info.dataDirectory;
     state.projects=await invoke('projects');if(state.projects.length===1)await chooseProject(state.projects[0].id);else{state.page='start';render();}
     if(info.recoveredRecordings)toast(`${info.recoveredRecordings} interrupted recordings recovered`);

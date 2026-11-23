@@ -1,4 +1,5 @@
 mod attachments;
+mod bookmark_shortcut;
 mod consent_documents;
 mod export;
 mod handoff;
@@ -339,12 +340,13 @@ async fn input_devices() -> Result<Vec<recorder::InputDevice>> {
 }
 #[tauri::command]
 async fn start_recording(
+    app: tauri::AppHandle,
     core: AppState<'_>,
     session_id: String,
     device_id: Option<String>,
 ) -> Result<recorder::Status> {
     let core = core.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let status = tauri::async_runtime::spawn_blocking(move || {
         let mut r = core.recorder.lock().map_err(|_| "Recorder unavailable.")?;
         let s = core
             .store
@@ -353,7 +355,13 @@ async fn start_recording(
         r.start(&s, &session_id, device_id)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    bookmark_shortcut::enable(&app);
+    Ok(status)
+}
+#[tauri::command]
+fn global_bookmark_ready(shortcut: State<'_, bookmark_shortcut::BookmarkShortcut>) -> bool {
+    shortcut.ready()
 }
 #[tauri::command]
 fn recording_status(core: AppState<'_>) -> Result<recorder::Status> {
@@ -371,9 +379,9 @@ fn pause_recording(core: AppState<'_>, paused: bool) -> Result<recorder::Status>
         .pause(paused)
 }
 #[tauri::command]
-async fn stop_recording(core: AppState<'_>) -> Result<Option<Audio>> {
+async fn stop_recording(app: tauri::AppHandle, core: AppState<'_>) -> Result<Option<Audio>> {
     let core = core.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let mut r = core.recorder.lock().map_err(|_| "Recorder unavailable.")?;
         let s = core
             .store
@@ -382,7 +390,9 @@ async fn stop_recording(core: AppState<'_>) -> Result<Option<Audio>> {
         r.stop(&s)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string());
+    bookmark_shortcut::disable(&app);
+    result?
 }
 
 pub fn run() {
@@ -398,6 +408,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            bookmark_shortcut::install(app.handle());
             let root = match std::env::var_os("FIELDNOTE_DATA_DIR") {
                 Some(dir) => PathBuf::from(dir),
                 None => {
@@ -456,6 +467,7 @@ pub fn run() {
             prepare_for_agent,
             input_devices,
             start_recording,
+            global_bookmark_ready,
             recording_status,
             pause_recording,
             stop_recording
