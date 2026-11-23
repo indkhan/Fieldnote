@@ -1,5 +1,6 @@
 ﻿import { AnnotationMode, GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import type { PDFDocument as WritablePdf, PDFForm, PDFSignature } from 'pdf-lib';
 import type { ConsentField, ConsentPosition, ConsentResponse } from './consent-types';
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -113,7 +114,7 @@ export async function openPdfConsent(bytes: Uint8Array) {
           continue;
         } else if (native instanceof PDFSignature && signature) {
           // The drawn mark is a visual signature, so the empty certificate widget must not overlay it.
-          form?.removeField(native);
+          if (form) removeSignatureWidget(doc, form, native);
         }
         if (!field.position) {
           unpositioned.push(field);
@@ -121,11 +122,16 @@ export async function openPdfConsent(bytes: Uint8Array) {
         }
         const p = field.position;
         const view = (await pdf.getPage(p.page)).getViewport({ scale: 1 });
-        const [x, y] = view.convertToPdfPoint(p.x * view.width, (p.y + p.height) * view.height);
         const page = doc.getPage(p.page - 1);
-        const local = { x, y, width: p.width * view.width, height: p.height * view.height, rotate: degrees(view.rotation) };
-        const image = await doc.embedPng(signature || answerImage(answer, local.width, local.height));
-        page.drawImage(image, local);
+        const width = p.width * view.width;
+        const height = p.height * view.height;
+        const image = await doc.embedPng(signature || answerImage(answer, width, height));
+        const size = signature ? image.scaleToFit(width, height) : { width, height };
+        const [x, y] = view.convertToPdfPoint(
+          p.x * view.width + (width - size.width) / 2,
+          p.y * view.height + (height + size.height) / 2,
+        );
+        page.drawImage(image, { x, y, ...size, rotate: degrees(view.rotation) });
       }
       if (unpositioned.length) {
         let page = doc.addPage();
@@ -151,6 +157,20 @@ export async function openPdfConsent(bytes: Uint8Array) {
       return doc.save();
     },
   };
+}
+
+function removeSignatureWidget(pdf: WritablePdf, form: PDFForm, field: PDFSignature) {
+  // Empty signature widgets may lack a normal appearance that PDFForm.removeField requires.
+  const widgetRefs = field.acroField.getWidgets().flatMap(widget => {
+    const ref = pdf.context.getObjectRef(widget.dict);
+    return ref ? [ref] : [];
+  });
+  for (const page of pdf.getPages()) {
+    for (const ref of widgetRefs) page.node.removeAnnot(ref);
+  }
+  form.acroForm.removeField(field.acroField);
+  for (const ref of widgetRefs) pdf.context.delete(ref);
+  pdf.context.delete(field.ref);
 }
 
 function displayValue(value: string | boolean) {
