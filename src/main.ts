@@ -14,12 +14,16 @@ import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { installBlockReason, downloadPercent } from './update-policy.mjs';
 import { barHeight, createVoiceActivity } from './recording-meter.mjs';
+import type { ConsentResponse, ConsentTemplate } from './consent-types';
 
 interface Question { id: string; text: string; answer: string }
 interface Project { id: string; name: string }
 interface Group { id: string; projectId: string; name: string; questions: Question[] }
 interface Marker { id: string; audioId: string; atSecs: number; text: string }
-interface Session { id: string; projectId: string; title: string; person: string; date: string; questionnaireId: string|null; questionnaireName: string; questions: Question[]; notes: string; markers: Marker[] }
+interface QuestionnaireDefault { id: string; required: boolean }
+interface QuestionnaireSection { groupId: string; name: string; required: boolean; questionIds: string[] }
+interface ProjectSetup { questionnaires: QuestionnaireDefault[]; requiredFieldIds: string[]; consentTemplates: ConsentTemplate[] }
+interface Session { id: string; projectId: string; title: string; person: string; date: string; questionnaireId: string|null; questionnaireName: string; questions: Question[]; notes: string; markers: Marker[]; questionnaireSections: QuestionnaireSection[]; requiredFieldIds: string[]; consentTemplates: ConsentTemplate[]; consentResponses: Record<string,ConsentResponse> }
 interface Summary { id: string; title: string; person: string; date: string; questionnaireName: string; audioCount: number; values: Values }
 interface Audio { id: string; name: string; path: string; byteLength: number; durationSecs: number|null; status: string }
 interface Attachment { id:string; name:string; path:string; byteLength:number; caption:string }
@@ -34,6 +38,7 @@ const clock = (seconds: number) => { const n = Math.floor(seconds); return `${n 
 const initials = (name: string) => (name || '?').split(' ').slice(0,2).map(s=>s[0]).join('');
 const state = { projects: [] as Project[], projectId: '', groups: [] as Group[], rows: [] as Summary[], total: 0, matching: 0, query: '', selected: new Set<string>(), page: 'list', session: null as Session|null, audio: [] as Audio[], attachments: [] as Attachment[], devices: [] as Device[], deviceId: localStorage.getItem('microphone') || '', dataDirectory: '', saveState: 'saved', propertySaveState: 'saved', fields: [] as ProjectField[], sessionValues: {} as Values, preferences: defaultView(), matchingSelected: 0, propertyCache: new Map<string,Values>() };
 let recording: Recording = { active:false, finished:false, paused:false, sessionId:null, audioId:null, durationSecs:0, level:0, error:null };
+let projectSetup: ProjectSetup|null = null;
 let exportState = { ids: [] as string[], allIds: [] as string[], oneId: '', format: 'zip', preview: [] as Session[], filesOpen: false };
 interface Handoff { folder: string; newCount: number; editedCount: number; unchangedCount: number; prompt: string }
 let editor: { mode: 'project'|'session'; group: Group }|null = null;
@@ -61,7 +66,7 @@ async function list(append=false) {
 }
 async function chooseProject(id: string) {
   await flushAll();state.projectId=id;state.query='';state.selected.clear();state.page='list';state.session=null;propertyDrafts.clear();state.propertyCache.clear();localStorage.setItem('project',id);
-  [state.groups,state.fields]=await Promise.all([invoke<Group[]>('questionnaires',{projectId:id}),invoke<ProjectField[]>('project_fields',{projectId:id})]);
+  [state.groups,state.fields,projectSetup]=await Promise.all([invoke<Group[]>('questionnaires',{projectId:id}),invoke<ProjectField[]>('project_fields',{projectId:id}),invoke<ProjectSetup|null>('project_setup',{projectId:id})]);
   state.preferences=readView(id,state.fields);await list();render();
 }
 async function createProject(name: string) {
@@ -75,7 +80,7 @@ async function openSession(id: string) {
 
 function render() {
   if(state.page==='start'){renderStart();return;}
-  $('#app').innerHTML=`<section class="surface"><header class="topbar"><div class="projectbox"><div class="brand">${logo()}Fieldnote</div><span class="divider"></span><select id="project" aria-label="Project" ${recording.active?'disabled':''}>${state.projects.map(p=>`<option value="${p.id}" ${p.id===state.projectId?'selected':''}>${esc(p.name)}</option>`).join('')}</select><button class="textbtn" data-action="new-project" aria-label="Add project" ${recording.active?'disabled':''}>${icon('plus')}</button><button class="iconbtn" data-action="project-settings" aria-label="Project settings" title="Project settings">${icon('more')}</button></div><button class="local" data-action="storage"><i class="dot"></i>On this computer</button></header><div class="content">${state.page==='list'?renderList():renderForm()}</div><footer class="appfooter"><span>No account needed · everything stays on this computer</span><span class="updatebox">${updateControl()}</span></footer></section>`;
+  $('#app').innerHTML=`<section class="surface"><header class="topbar"><div class="projectbox"><div class="brand">${logo()}Fieldnote</div><span class="divider"></span><select id="project" aria-label="Project" ${recording.active?'disabled':''}>${state.projects.map(p=>`<option value="${p.id}" ${p.id===state.projectId?'selected':''}>${esc(p.name)}</option>`).join('')}</select><button class="textbtn" data-action="new-project" aria-label="Add project" ${recording.active?'disabled':''}>${icon('plus')}</button><button class="iconbtn" data-action="project-settings" aria-label="Project settings" title="Project settings">${icon('more')}</button></div><button class="local" data-action="storage"><i class="dot"></i>On this computer</button></header><div class="content">${state.page==='list'?renderList():state.page==='setup'?renderProjectSetup():renderForm()}</div><footer class="appfooter"><span>No account needed · everything stays on this computer</span><span class="updatebox">${updateControl()}</span></footer></section>`;
   if(state.page==='list'){const all=document.querySelector<HTMLInputElement>('#select-all'),n=state.rows.filter(s=>state.selected.has(s.id)).length;if(all)all.indeterminate=n>0&&n<state.rows.length;}else{savedStatus();updateMeter();autosizeAll();}savedStatus();restorePropertyValidity();
 }
 function renderStart() {
@@ -89,9 +94,59 @@ function renderList() {
   return renderOverview({rows:state.rows,fields:state.fields,view:state.preferences,query:state.query,total:state.total,matching:state.matching,selected:state.selected,outside:state.selected.size-state.matchingSelected,draft:(sessionId,fieldId)=>propertyDrafts.get(propertyKey(sessionId,fieldId))?.raw});
 }
 
+const checked = (value: boolean) => value ? 'checked' : '';
+const requiredTag = (required: boolean) => required ? '<span class="required-item">Required</span>' : '';
+
+function setupDraft(): ProjectSetup {
+  return structuredClone(projectSetup ?? {
+    questionnaires: state.groups.slice(0,1).map(group=>({id:group.id,required:false})),
+    requiredFieldIds: [],
+    consentTemplates: [],
+  });
+}
+
+async function saveSetup(setup: ProjectSetup) {
+  projectSetup=await invoke<ProjectSetup>('save_project_setup',{projectId:state.projectId,setup});
+  render();
+}
+
+function renderProjectSetup() {
+  const setup=setupDraft();
+  return `<button class="back" data-action="back">${icon('back')}All sessions</button>
+    <div class="pagehead"><div><h1>Project setup</h1><p>Choose what appears in new sessions for ${esc(project().name)}.</p></div></div>
+    <section class="setup-section"><div class="setup-row"><h2>Fields</h2><button class="btn quiet" data-action="property-add">${icon('plus')}Add field</button></div>
+    ${state.fields.map(field=>`<div class="setup-row"><div>${esc(field.name)} <span class="hint">${fieldKinds[field.kind]}</span></div><label><input type="checkbox" data-required-field="${esc(field.id)}" ${checked(setup.requiredFieldIds.includes(field.id))}> Required</label></div>`).join('')||'<p class="hint">Add a field to track details such as email.</p>'}</section>
+    <section class="setup-section"><div class="setup-row"><h2>Questionnaires</h2><button class="btn quiet" data-action="new-group">${icon('plus')}New questionnaire</button></div>
+    ${state.groups.map(group=>{const selected=setup.questionnaires.find(item=>item.id===group.id);return `<div class="setup-row"><div>${esc(group.name)} <span class="hint">${group.questions.length} questions</span></div><div class="actions"><select aria-label="Use ${esc(group.name)}" data-default-questionnaire="${esc(group.id)}"><option value="off" ${!selected?'selected':''}>Add individually</option><option value="optional" ${selected&&!selected.required?'selected':''}>Optional in new sessions</option><option value="required" ${selected?.required?'selected':''}>Required in new sessions</option></select><button class="btn quiet" data-action="edit-group" data-id="${esc(group.id)}">Edit</button></div></div>`;}).join('')||'<p class="hint">Create a reusable questionnaire for this project.</p>'}</section>
+    <section class="setup-section"><div class="setup-row"><h2>Consent forms</h2><button class="btn quiet" data-action="new-consent">${icon('plus')}Add consent form</button></div>
+    ${setup.consentTemplates.map(template=>`<div class="setup-row"><div>${esc(template.title)} <span class="hint">${{text:'Text',pdf:'PDF',docx:'Word'}[template.format]}</span></div><div class="actions"><label><input type="checkbox" data-required-consent="${esc(template.id)}" ${checked(template.required)}> Required</label><button class="btn quiet" data-action="edit-consent" data-id="${esc(template.id)}">Edit</button><button class="btn quiet" data-action="remove-consent" data-id="${esc(template.id)}">Remove</button></div></div>`).join('')||'<p class="hint">Write consent text or upload a PDF or Word form.</p>'}</section>`;
+}
+
+function renderQuestionnaires() {
+  const s=current();
+  const renderQuestions=(questions: Question[])=>`<div class="questions">${questions.map((q,i)=>`<label class="field"><span class="questionlabel"><span class="num">${String(i+1).padStart(2,'0')}</span>${esc(q.text)}</span><textarea data-answer="${esc(q.id)}" placeholder="Write their answer, a quote, or what you noticed…">${esc(q.answer)}</textarea></label>`).join('')}</div>`;
+  const edit='<button class="textbtn" data-action="session-questions">Edit this session’s questions</button>';
+  if(!s.questionnaireSections.length){
+    return `<div class="questionnaireline"><label class="field">Questionnaire<select id="questionnaire"><option value="">Blank form</option>${state.groups.map(g=>`<option value="${esc(g.id)}" ${g.id===s.questionnaireId?'selected':''}>${esc(g.name)}</option>`).join('')}</select></label>${edit}</div>${s.questions.length?renderQuestions(s.questions):'<p class="hint">A blank session works with notes and audio alone. Add questions whenever you need them.</p>'}`;
+  }
+  const assigned=new Set(s.questionnaireSections.flatMap(section=>section.questionIds));
+  const extra=s.questions.filter(question=>!assigned.has(question.id));
+  const remaining=state.groups.filter(group=>!s.questionnaireSections.some(section=>section.groupId===group.id));
+  return `<section class="setup-section"><div class="setup-row"><h2>Questionnaires</h2>${edit}</div>${s.questionnaireSections.map(section=>`<details class="session-questionnaire"><summary>${esc(section.name)}${requiredTag(section.required)}</summary>${renderQuestions(s.questions.filter(q=>section.questionIds.includes(q.id)))}</details>`).join('')}${extra.length?`<details class="session-questionnaire" open><summary>Additional questions</summary>${renderQuestions(extra)}</details>`:''}${remaining.length?`<label class="field">Add a questionnaire<select id="add-session-questionnaire"><option value="">Choose a questionnaire</option>${remaining.map(group=>`<option value="${esc(group.id)}">${esc(group.name)}</option>`).join('')}</select></label>`:''}</section>`;
+}
+
+function renderSessionConsent() {
+  const s=current();
+  if(!s.consentTemplates.length)return '';
+  return `<section class="setup-section" id="session-consent"><h2>Consent forms</h2>${s.consentTemplates.map(template=>{
+    const response=s.consentResponses[template.id];
+    return `<div class="setup-row"><div>${esc(template.title)}${requiredTag(template.required)}<div class="hint">${response?.complete?'Completed':response?'Draft':'To do'}</div></div><button class="btn" data-action="fill-consent" data-id="${esc(template.id)}">${response?.complete?'View form':'Open form'}</button>${response?.documentId?`<button class="btn quiet" data-action="save-consent-copy" data-id="${esc(template.id)}">Save copy</button>`:''}</div>`;
+  }).join('')}</section>`;
+}
+
 function renderForm() {
   const s=current();
-  return `<button class="back" data-action="back">${icon('back')}All sessions</button><div class="pagehead"><div><h1>${s.title==='Untitled session'?'New session':esc(s.title)}</h1><p>Fill in the answers as you talk.</p></div><div class="actions"><button class="btn" data-action="delete-session" ${recording.active?'disabled':''}>Delete session</button><button class="btn" data-action="export-one" ${recording.active?'disabled':''}>${icon('export')}Export${agentIcons()}</button></div></div><div class="form"><div class="fields"><label class="field">Session title<input data-session="title" value="${esc(s.title==='Untitled session'?'':s.title)}" maxlength="1000" placeholder="e.g. Call with Alex"></label><label class="field">Person<input data-session="person" value="${esc(s.person)}" maxlength="1000" placeholder="Who did you talk to?"></label><label class="field">Date<input type="date" data-session="date" value="${esc(s.date)}" required></label></div>${recording.active?renderLiveRecording():''}${renderAudio()}<div class="questionnaireline"><label class="field">Questionnaire<select id="questionnaire"><option value="" ${!s.questionnaireId?'selected':''}>Blank form</option>${state.groups.map(g=>`<option value="${g.id}" ${g.id===s.questionnaireId?'selected':''}>${esc(g.name)}</option>`).join('')}</select></label><button class="textbtn" data-action="session-questions">Edit this session’s questions</button></div><div class="questions">${s.questions.map((q,i)=>`<label class="field"><span class="questionlabel"><span class="num">${String(i+1).padStart(2,'0')}</span>${esc(q.text)}</span><textarea data-answer="${q.id}" placeholder="Write their answer, a quote, or what you noticed…">${esc(q.answer)}</textarea></label>`).join('')||'<p class="hint">A blank session works with notes and audio alone. Add questions whenever you need them.</p>'}</div><details class="optional" ${s.notes||!s.questions.length?'open':''}><summary>${s.questions.length?'Additional notes':'Session notes'}</summary><label class="field"><textarea id="notes" aria-label="Additional notes" placeholder="Anything else worth keeping…">${esc(s.notes)}</textarea></label></details>${renderProjectFields()}${renderAttachments()}<div class="savebar"><span class="hint" id="save-status"></span><button class="btn primary" data-action="back">Done</button></div></div>`;
+  return `<button class="back" data-action="back">${icon('back')}All sessions</button><div class="pagehead"><div><h1>${s.title==='Untitled session'?'New session':esc(s.title)}</h1><p>Fill in the answers as you talk.</p></div><div class="actions"><button class="btn" data-action="delete-session" ${recording.active?'disabled':''}>Delete session</button><button class="btn" data-action="export-one" ${recording.active?'disabled':''}>${icon('export')}Export${agentIcons()}</button></div></div><div class="form"><div class="fields"><label class="field">Session title<input data-session="title" value="${esc(s.title==='Untitled session'?'':s.title)}" maxlength="1000" placeholder="e.g. Call with Alex"></label><label class="field">Person<input data-session="person" value="${esc(s.person)}" maxlength="1000" placeholder="Who did you talk to?"></label><label class="field">Date<input type="date" data-session="date" value="${esc(s.date)}" required></label></div>${recording.active?renderLiveRecording():''}${renderAudio()}${renderQuestionnaires()}<details class="optional" ${s.notes||!s.questions.length?'open':''}><summary>${s.questions.length?'Additional notes':'Session notes'}</summary><label class="field"><textarea id="notes" aria-label="Additional notes" placeholder="Anything else worth keeping…">${esc(s.notes)}</textarea></label></details>${renderProjectFields()}${renderSessionConsent()}${renderAttachments()}<div class="savebar"><span class="hint" id="save-status"></span><button class="btn primary" data-action="back">Done</button></div></div>`;
 }
 async function attachments() { state.attachments=await invoke('session_attachments',{sessionId:current().id}); }
 function renderAttachments() {
@@ -227,6 +282,51 @@ function projectSettingsModal(){
 function modal(title: string,subtitle: string,content: string) { const d=$<HTMLDialogElement>('#dialog');d.innerHTML=`<h2>${esc(title)}</h2><p class="subtitle">${esc(subtitle)}</p>${content}`;if(!d.open)d.showModal(); }
 function closeModal(){ $<HTMLDialogElement>('#dialog').close(); }
 
+let pendingSessionExit: (()=>Promise<void>)|null = null;
+$<HTMLDialogElement>('#dialog').addEventListener('close',()=>{
+  if(!$<HTMLDialogElement>('#dialog').open)pendingSessionExit=null;
+});
+
+async function requestSessionLeave(leave: ()=>Promise<void>) {
+  if(state.page!=='form'){await leave();return;}
+  const s=current();
+  const incomplete: string[]=[];
+  const invalidRequired: HTMLInputElement[]=[];
+  for(const field of state.fields){
+    if(!s.requiredFieldIds.includes(field.id))continue;
+    const input=document.querySelector<HTMLInputElement>(`[data-property="${CSS.escape(field.id)}"]`);
+    if(input&&!input.validity.valid)invalidRequired.push(input);
+    if(input&&(!input.validity.valid||!input.value.trim()))incomplete.push(field.name);
+    else if(!input&&(state.sessionValues[field.id]??'')==='')incomplete.push(field.name);
+  }
+  for(const section of s.questionnaireSections){
+    if(section.required&&s.questions.some(question=>section.questionIds.includes(question.id)&&!question.answer.trim()))incomplete.push(section.name);
+  }
+  for(const template of s.consentTemplates){
+    if(template.required&&!s.consentResponses[template.id]?.complete)incomplete.push(template.title);
+  }
+  if(!incomplete.length){await leave();return;}
+  pendingSessionExit=async()=>{
+    for(const input of invalidRequired){
+      const fieldId=input.dataset.property!;
+      propertyDrafts.delete(propertyKey(s.id,fieldId));
+      input.setCustomValidity('');
+      input.value=String(state.sessionValues[fieldId]??'');
+    }
+    closeModal();
+    await leave();
+  };
+  modal('Leave this session?','These required items are incomplete.',`<ul>${incomplete.map(name=>`<li>${esc(name)}</li>`).join('')}</ul><div class="buttons"><button class="btn primary" data-action="close">Go back</button><button class="btn" data-action="leave-anyway">Leave anyway</button></div>`);
+}
+
+async function leaveForOverview() {
+  await flushAll();
+  state.page='list';
+  state.session=null;
+  await list();
+  render();
+}
+
 let appVersion = '';
 let availableUpdate: Update|null = null;
 let updateBusy = false;
@@ -293,7 +393,7 @@ function editQuestions(mode: 'project'|'session',id?: string){const old=state.gr
 function renderEditor(){
   const e=editor!;
   modal(e.mode==='project'?'Edit questionnaire':'This session’s questions',e.mode==='project'?'Changes apply to future sessions. Existing answers stay unchanged.':'Changes apply only to this session. Existing answers are kept.',`<form id="questionform">${e.mode==='project'?`<label class="field">Group name<input id="group-name" value="${esc(e.group.name)}" maxlength="200" required placeholder="e.g. Follow-up"></label>`:''}${e.group.questions.map((q,i)=>`<div class="groupedit"><span class="num">${String(i+1).padStart(2,'0')}</span><input data-edit-question="${q.id}" value="${esc(q.text)}" aria-label="Question ${i+1}" required placeholder="Write a question…"><button type="button" data-action="remove-question" data-id="${q.id}" ${q.answer?'disabled title="Keep questions that have answers"':''} aria-label="Remove question ${i+1}">×</button></div>`).join('')}<button type="button" class="btn quiet" style="margin-top:13px" data-action="add-question">${icon('plus')}Add question</button><div class="buttons"><button type="button" class="btn" data-action="close">Cancel</button><button class="btn primary" type="submit">Save questions</button></div></form>`);
-  $<HTMLFormElement>('#questionform').onsubmit=async ev=>{ev.preventDefault();const button=$<HTMLButtonElement>('#questionform button[type=submit]');button.disabled=true;try{if(e.mode==='project'){await invoke('save_questionnaire',{questionnaire:e.group});state.groups=await invoke('questionnaires',{projectId:state.projectId});groupsModal();}else{await flushAll();current().questions=structuredClone(e.group.questions);current().questionnaireName=current().questionnaireName.replace(/ · customized$/,'')+' · customized';changed();await flushAll();closeModal();render();}toast('Questions saved');}catch(error){failure(error);button.disabled=false;}};
+  $<HTMLFormElement>('#questionform').onsubmit=async ev=>{ev.preventDefault();const button=$<HTMLButtonElement>('#questionform button[type=submit]');button.disabled=true;try{if(e.mode==='project'){await invoke('save_questionnaire',{questionnaire:e.group});state.groups=await invoke('questionnaires',{projectId:state.projectId});if(state.page==='setup'){closeModal();render();}else groupsModal();}else{await flushAll();current().questions=structuredClone(e.group.questions);current().questionnaireName=current().questionnaireName.replace(/ · customized$/,'')+' · customized';changed();await flushAll();closeModal();render();}toast('Questions saved');}catch(error){failure(error);button.disabled=false;}};
 }
 async function showExport(ids: string[],oneId=''){await flushAll();if(recording.active&&ids.includes(recording.sessionId!))throw Error('Stop recording before exporting this session.');exportState.ids=ids;exportState.allIds=ids;exportState.oneId=oneId;exportState.filesOpen=false;await loadExportPreview();renderExport();}
 async function loadExportPreview(){exportState.preview=await Promise.all(exportState.ids.slice(0,8).map(sessionId=>invoke<Session>('get_session',{sessionId})));}
@@ -370,17 +470,65 @@ async function action(button: HTMLButtonElement){
       modal('Move selected sessions','Answers, notes, recordings, attachments, and field values will be kept.',`<form id="moveform"><label class="field">Destination project<select id="move-destination" required><option value="">Choose a project</option>${state.projects.filter(p=>p.id!==state.projectId).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></label>${state.projects.length<2?'<p class="hint">Create another project first.</p>':''}<div class="buttons"><button type="button" class="btn" data-action="close">Cancel</button><button class="btn primary" ${state.projects.length<2?'disabled':''}>Move sessions</button></div></form>`);
       $<HTMLFormElement>('#moveform').onsubmit=async ev=>{ev.preventDefault();const form=$<HTMLFormElement>('#moveform');form.inert=true;try{await invoke('move_sessions',{projectId:state.projectId,sessionIds:[...state.selected],destination:$<HTMLSelectElement>('#move-destination').value});state.selected.clear();state.propertyCache.clear();await list();closeModal();render();toast('Sessions moved');}catch(error){failure(error);form.inert=false;}};
       break;
-    case 'new': await flushAll();{const s=await invoke<Session>('create_session',{projectId:state.projectId,questionnaireId:state.groups[0]?.id??null,date:localDate()});await openSession(s.id);}break;
+    case 'new': await flushAll();{const s=await invoke<Session>('create_session',{projectId:state.projectId,questionnaireId:projectSetup?null:state.groups[0]?.id??null,date:localDate()});await openSession(s.id);}break;
     case 'start-project': await chooseProject(button.dataset.id!);break;
     case 'open': await openSession(button.dataset.id!);break;
-    case 'back': if(recording.active)throw Error('Stop recording before leaving this session.');await flushAll();state.page='list';await list();render();break;
+    case 'back': if(recording.active)throw Error('Stop recording before leaving this session.');await requestSessionLeave(leaveForOverview);break;
+    case 'leave-anyway':await pendingSessionExit?.();pendingSessionExit=null;break;
+    case 'project-setup':state.page='setup';render();break;
     case 'questionnaires':groupsModal();break;
     case 'new-group':editQuestions('project');break;
     case 'edit-group':editQuestions('project',button.dataset.id);break;
     case 'session-questions':editQuestions('session');break;
     case 'add-question':if(editor!.group.questions.length>=200)throw Error('A questionnaire can have up to 200 questions.');editor!.group.questions.push({id:uid(),text:'',answer:''});renderEditor();break;
     case 'remove-question':editor!.group.questions=editor!.group.questions.filter(q=>q.id!==button.dataset.id||q.answer.length>0);renderEditor();break;
-    case 'close':closeModal();break;
+    case 'close':pendingSessionExit=null;closeModal();break;
+    case 'new-consent':
+    case 'edit-consent': {
+      const setup=setupDraft();
+      const previous=setup.consentTemplates.find(template=>template.id===button.dataset.id);
+      const {openConsentTemplate}=await import('./consent');
+      const template=await openConsentTemplate(previous);
+      if(!template)break;
+      if(previous)setup.consentTemplates=setup.consentTemplates.map(item=>item.id===previous.id?template:item);
+      else setup.consentTemplates.push(template);
+      await saveSetup(setup);
+      break;
+    }
+    case 'remove-consent': {
+      const setup=setupDraft();
+      const template=setup.consentTemplates.find(item=>item.id===button.dataset.id);
+      if(!template)break;
+      modal('Remove consent form?',`New sessions will no longer include ${template.title}. Existing sessions keep their copy.`,'<div class="buttons"><button class="btn" data-action="close">Cancel</button><button class="btn danger" data-action="confirm-remove-consent">Remove form</button></div>');
+      $<HTMLButtonElement>('[data-action="confirm-remove-consent"]').dataset.id=template.id;
+      break;
+    }
+    case 'confirm-remove-consent': {
+      const setup=setupDraft();
+      setup.consentTemplates=setup.consentTemplates.filter(item=>item.id!==button.dataset.id);
+      await saveSetup(setup);
+      closeModal();
+      break;
+    }
+    case 'fill-consent': {
+      const s=current();
+      const template=s.consentTemplates.find(item=>item.id===button.dataset.id);
+      if(!template)break;
+      const {openConsentForm}=await import('./consent');
+      const response=await openConsentForm(template,s.consentResponses[template.id]);
+      if(!response)break;
+      s.consentResponses[template.id]=response;
+      changed();
+      await saves.flush();
+      const section=document.querySelector('#session-consent');
+      if(section)section.outerHTML=renderSessionConsent();
+      break;
+    }
+    case 'save-consent-copy': {
+      const response=current().consentResponses[button.dataset.id!];
+      if(response?.documentId){const {saveConsentCopy}=await import('./consent');await saveConsentCopy(response);}
+      break;
+    }
     case 'clear':state.selected.clear();await selectionScope();render();break;
     case 'select-results':state.selected=new Set(await invoke<string[]>('overview_ids',{query:overviewQuery()}));await selectionScope();render();break;
     case 'more':await list(true);render();break;
@@ -407,13 +555,13 @@ async function action(button: HTMLButtonElement){
     case 'install-update': if (availableUpdate) openInstallModal(availableUpdate); break;
     case 'confirm-install': await installUpdate(); break;
     case 'storage':modal('Saved on this computer','Nothing is uploaded. Your notes, recordings, and attachments are kept in this folder:',`<p class="hint" style="overflow-wrap:anywhere">${esc(state.dataDirectory)}</p><p class="hint" style="margin-top:15px">To keep a backup, export your sessions as a ZIP.</p><div class="buttons"><button class="btn" data-action="close">Done</button></div>`);break;
-    case 'new-project':if(recording.active)throw Error('Stop recording before changing projects.');await flushAll();modal('New project','Each project keeps its own sessions and questionnaires.',`<form id="projectform"><label class="field">Project name<input id="project-name" required maxlength="200" placeholder="Project name"></label><div class="buttons"><button type="button" class="btn" data-action="close">Cancel</button><button type="submit" class="btn primary">Create project</button></div></form>`);$<HTMLFormElement>('#projectform').onsubmit=async ev=>{ev.preventDefault();const submit=$<HTMLButtonElement>('#projectform button[type=submit]');submit.disabled=true;try{await createProject($<HTMLInputElement>('#project-name').value);}catch(e){failure(e);submit.disabled=false;}};break;
+    case 'new-project':if(recording.active)throw Error('Stop recording before changing projects.');modal('New project','Each project keeps its own sessions and questionnaires.',`<form id="projectform"><label class="field">Project name<input id="project-name" required maxlength="200" placeholder="Project name"></label><div class="buttons"><button type="button" class="btn" data-action="close">Cancel</button><button type="submit" class="btn primary">Create project</button></div></form>`);$<HTMLFormElement>('#projectform').onsubmit=async ev=>{ev.preventDefault();const submit=$<HTMLButtonElement>('#projectform button[type=submit]');submit.disabled=true;try{const name=$<HTMLInputElement>('#project-name').value;await requestSessionLeave(async()=>{await flushAll();await createProject(name);});}catch(e){failure(e);submit.disabled=false;}};break;
   }
 }
 
 document.addEventListener('click',async ev=>{
   const b=(ev.target as Element).closest<HTMLButtonElement>('button[data-action]');if(!b||b.disabled||actionBusy)return;
-  const original=b.innerHTML,skip=['record','pause','close','dismiss','mark','seek','remove-marker'].includes(b.dataset.action!);
+  const original=b.innerHTML,skip=['record','pause','close','dismiss','mark','seek','remove-marker','back','leave-anyway','new-project'].includes(b.dataset.action!);
   try{if(!skip)capturePropertyEditors();}catch(error){failure(error);return;}
   b.disabled=true;actionBusy=true;$('#app').inert=true;
   try{if(!skip)await flushAll();await action(b);}catch(error){failure(error);}finally{$('#app').inert=false;actionBusy=false;if(b.isConnected){b.disabled=false;b.innerHTML=original;}}
@@ -433,17 +581,49 @@ document.addEventListener('input',ev=>{
 });
 document.addEventListener('change',async ev=>{
   const el=ev.target as HTMLInputElement;
-  if(el.dataset.property){try{commitProperty(el);await propertySaves.flush();await refreshAfterProperties();}catch(error){failure(error);}return;}
+  const {requiredField,defaultQuestionnaire,requiredConsent}=el.dataset;
+  if(requiredField||defaultQuestionnaire||requiredConsent){
+    const setup=setupDraft();
+    if(requiredField){
+      setup.requiredFieldIds=setup.requiredFieldIds.filter(id=>id!==requiredField);
+      if(el.checked)setup.requiredFieldIds.push(requiredField);
+    }
+    if(defaultQuestionnaire){
+      const item=setup.questionnaires.find(entry=>entry.id===defaultQuestionnaire);
+      if(el.value==='off')setup.questionnaires=setup.questionnaires.filter(entry=>entry.id!==defaultQuestionnaire);
+      else if(item)item.required=el.value==='required';
+      else setup.questionnaires.push({id:defaultQuestionnaire,required:el.value==='required'});
+    }
+    if(requiredConsent){
+      const template=setup.consentTemplates.find(item=>item.id===requiredConsent);
+      if(template)template.required=el.checked;
+    }
+    $('#app').inert=true;
+    try{await saveSetup(setup);}catch(error){failure(error);render();}finally{$('#app').inert=false;}
+    return;
+  }
+  if(el.dataset.property){if(isInvalidRequiredField(el))return;try{commitProperty(el);await propertySaves.flush();await refreshAfterProperties();}catch(error){failure(error);}return;}
   if(el.dataset.columnVisible){try{await flushAll();const hidden=state.preferences.hidden;state.preferences.hidden=el.checked?hidden.filter(id=>id!==el.dataset.columnVisible):[...new Set([...hidden,el.dataset.columnVisible])];rememberView();render();}catch(error){failure(error);}return;}
   if(el.dataset.ruleField!==undefined){const index=Number(el.dataset.ruleField),field=sortFields(state.fields).find(f=>f.id===el.value)!;filterDraft[index]={field:field.id,op:operators(field.kind)[0][0],value:null};filterModal();return;}
   if(el.dataset.ruleOp!==undefined){filterDraft[Number(el.dataset.ruleOp)].op=el.value;filterModal();return;}
   if(el.dataset.ruleValue!==undefined){const rule=filterDraft[Number(el.dataset.ruleValue)],field=sortFields(state.fields).find(f=>f.id===rule.field)!;rule.value=field.kind==='number'&&el.value!==''?Number(el.value):el.value;return;}
-  const navigating=el.id==='project'||el.id==='questionnaire'||el.dataset.select!==undefined||el.id==='select-all';
-  if(navigating){if(actionBusy){render();return;}try{capturePropertyEditors();}catch(error){failure(error);return;}actionBusy=true;$('#app').inert=true;}
+  const navigating=['project','questionnaire','add-session-questionnaire','select-all'].includes(el.id)||el.dataset.select!==undefined;
+  if(navigating){if(actionBusy){render();return;}try{if(el.id!=='project')capturePropertyEditors();}catch(error){failure(error);return;}actionBusy=true;$('#app').inert=true;}
   try{
     if(el.dataset.select){await flushAll();el.checked?state.selected.add(el.dataset.select):state.selected.delete(el.dataset.select);await selectionScope();render();}
     else if(el.id==='select-all'){await flushAll();for(const s of state.rows)el.checked?state.selected.add(s.id):state.selected.delete(s.id);await selectionScope();render();}
-    else if(el.id==='project'){if(recording.active)throw Error('Stop recording before changing projects.');await chooseProject(el.value);}
+    else if(el.id==='project'){if(recording.active)throw Error('Stop recording before changing projects.');const destination=el.value;el.value=state.projectId;await requestSessionLeave(()=>chooseProject(destination));}
+    else if(el.id==='add-session-questionnaire'){
+      const group=state.groups.find(g=>g.id===el.value);
+      if(!group)return;
+      const s=current();
+      if(s.questions.length+group.questions.length>200)throw Error('A session can have up to 200 questions.');
+      const questions=group.questions.map(q=>({id:uid(),text:q.text,answer:''}));
+      s.questionnaireSections.push({groupId:group.id,name:group.name,required:false,questionIds:questions.map(q=>q.id)});
+      s.questions.push(...questions);
+      s.questionnaireName=s.questionnaireSections.map(section=>section.name).join(' · ');
+      changed();await flushAll();render();
+    }
     else if(el.id==='microphone'){state.deviceId=el.value;localStorage.setItem('microphone',el.value);}
     else if(el.id==='questionnaire'){await flushAll();const s=current();if(s.questions.some(q=>q.answer.trim())){toast('Answers are already entered. Edit this session’s questions to keep them, or start another session.');render();return;}const g=state.groups.find(g=>g.id===el.value);s.questionnaireId=g?.id??null;s.questionnaireName=g?.name??'Blank form';s.questions=(g?.questions??[]).map(q=>({...q,answer:''}));changed();await flushAll();render();}
   }catch(error){failure(error);render();}finally{if(navigating){actionBusy=false;$('#app').inert=false;}}
@@ -484,14 +664,17 @@ function commitProperty(el:HTMLInputElement|HTMLSelectElement){
   propertySaves.enqueue(propertyKey(sessionId,fieldId),{projectId:state.projectId,sessionId,fieldId,value} satisfies PropertyPatch);needsPropertyRefresh=true;
 }
 function capturePropertyEditors(){
-  const editors=[...document.querySelectorAll<HTMLInputElement|HTMLSelectElement>('[data-property]')];
+  const editors=[...document.querySelectorAll<HTMLInputElement|HTMLSelectElement>('[data-property]')].filter(el=>!isInvalidRequiredField(el));
   for(const el of editors){if(!el.checkValidity()){el.reportValidity();throw Error('Correct the highlighted project field, or clear it to leave it empty.');}}
   for(const el of editors)commitProperty(el);
+}
+function isInvalidRequiredField(el: HTMLInputElement|HTMLSelectElement){
+  return state.page==='form' && !!state.session?.requiredFieldIds.includes(el.dataset.property??'') && !el.validity.valid;
 }
 function restorePropertyValidity(){for(const el of document.querySelectorAll<HTMLInputElement|HTMLSelectElement>('[data-property]')){if(propertyDrafts.get(propertyKey(el.dataset.propertySession!,el.dataset.property!))?.bad)el.setCustomValidity('Finish this value or clear it explicitly.');}}
 async function flushAll(){capturePropertyEditors();await flushCaptions();await saves.flush();await propertySaves.flush();}
 async function refreshAfterProperties(){if(!needsPropertyRefresh||state.page!=='list'||actionBusy||pointerDown||(document.activeElement as HTMLElement)?.dataset.property)return;await flushAll();if(actionBusy||pointerDown||state.page!=='list'||(document.activeElement as HTMLElement)?.dataset.property)return;needsPropertyRefresh=false;await list();if(actionBusy||pointerDown||state.page!=='list'||(document.activeElement as HTMLElement)?.dataset.property){needsPropertyRefresh=true;return;}render();}
-function renderProjectFields(){if(!state.fields.length)return '';return `<section class="project-fields"><h2>Details</h2><div class="project-field-grid">${state.fields.map(f=>`<label class="field">${esc(f.name)}${propertyControl(f,state.sessionValues,current().id,propertyDrafts.get(propertyKey(current().id,f.id))?.raw,true)}</label>`).join('')}</div><button class="textbtn" style="margin-top:13px" data-action="property-add">+ Add another column</button></section>`;}
+function renderProjectFields(){if(!state.fields.length)return '';return `<section class="project-fields"><h2>Details</h2><div class="project-field-grid">${state.fields.map(f=>`<label class="field"><span>${esc(f.name)}${requiredTag(current().requiredFieldIds.includes(f.id))}</span>${propertyControl(f,state.sessionValues,current().id,propertyDrafts.get(propertyKey(current().id,f.id))?.raw,true)}</label>`).join('')}</div><button class="textbtn" style="margin-top:13px" data-action="property-add">+ Add another column</button></section>`;}
 
 function addColumnModal(){
   modal('Add a column',`Track something extra for every session in ${project().name}, like a company or an email address.`,`<form id="columnform"><label class="field">Column name<input id="column-name" maxlength="80" required placeholder="e.g. Company"></label><label class="field">Type<select id="column-kind">${Object.entries(fieldKinds).map(([kind,name])=>`<option value="${kind}">${name}</option>`).join('')}</select></label><label class="field" id="column-options-field" hidden>Options, separated by commas<input id="column-options" placeholder="e.g. Yes, No, Maybe"></label><div class="buttons"><button type="button" class="btn" data-action="close">Cancel</button><button type="submit" class="btn primary">Add column</button></div></form>`);
@@ -538,7 +721,22 @@ async function boot(){
     if(info.recoveredRecordings)toast(`${info.recoveredRecordings} interrupted recordings recovered`);
     void checkForUpdates(false);
     let closing=false;
-    await getCurrentWindow().onCloseRequested(async ev=>{if(closing)return;ev.preventDefault();try{capturePropertyEditors();$('#app').inert=true;await flushAll();if(recording.active)await stopRecording();closing=true;await getCurrentWindow().destroy();}catch(error){$('#app').inert=false;failure(error);}});
+    await getCurrentWindow().onCloseRequested(async ev=>{
+      if(closing)return;
+      ev.preventDefault();
+      if(actionBusy || (pendingSessionExit && $<HTMLDialogElement>('#dialog').open))return;
+      try{
+        await requestSessionLeave(async()=>{
+          $('#app').inert=true;
+          try{
+            await flushAll();
+            if(recording.active)await stopRecording();
+            closing=true;
+            await getCurrentWindow().destroy();
+          }catch(error){closing=false;$('#app').inert=false;throw error;}
+        });
+      }catch(error){failure(error);}
+    });
   }catch(error){failure(error);$('#app').innerHTML='<div class="loading">Fieldnote could not open local storage. Your existing files have not been deleted. Close and reopen the app after checking the error above.</div>';}
 }
 void boot();

@@ -128,6 +128,16 @@ async fn delete_project(core: AppState<'_>, project_id: String) -> Result<Option
 async fn questionnaires(core: AppState<'_>, project_id: String) -> Result<Vec<Questionnaire>> {
     database(&core, move |s| s.questionnaires(&project_id)).await
 }
+
+#[tauri::command]
+async fn project_setup(core: AppState<'_>, project_id: String) -> Result<Option<ProjectSetup>> {
+    database(&core, move |s| s.project_setup(&project_id)).await
+}
+
+#[tauri::command]
+async fn save_project_setup(core: AppState<'_>, project_id: String, setup: ProjectSetup) -> Result<ProjectSetup> {
+    database(&core, move |s| s.save_project_setup(&project_id, setup)).await
+}
 #[tauri::command]
 async fn save_questionnaire(
     core: AppState<'_>,
@@ -442,6 +452,8 @@ pub fn run() {
             delete_sessions,
             delete_project,
             questionnaires,
+            project_setup,
+            save_project_setup,
             save_questionnaire,
             session_list,
             session_ids,

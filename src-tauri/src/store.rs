@@ -35,12 +35,13 @@ impl Store {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(err)?;
-        if version > 2 {
+        if version > 3 {
             return Err("This workspace requires a newer version of Fieldnote.".into());
         }
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS project_setup (project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS questionnaires (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), title TEXT NOT NULL, person TEXT NOT NULL, date TEXT NOT NULL, questionnaire_name TEXT NOT NULL, search_text TEXT NOT NULL, data TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS sessions_project_date ON sessions(project_id,date DESC,id);
@@ -53,7 +54,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS session_properties (session_id TEXT NOT NULL REFERENCES sessions(id), field_id TEXT NOT NULL REFERENCES project_fields(id), value TEXT NOT NULL, text_value TEXT NOT NULL, number_value REAL, PRIMARY KEY(session_id,field_id));
             CREATE INDEX IF NOT EXISTS properties_field_text ON session_properties(field_id,text_value,session_id);
             CREATE INDEX IF NOT EXISTS properties_field_number ON session_properties(field_id,number_value,session_id);
-            PRAGMA user_version=2;
+            PRAGMA user_version=3;
             COMMIT;").map_err(err)?;
         Ok(Self {
             conn,
@@ -205,7 +206,7 @@ impl Store {
         for mut session in sessions {
             let values = self.property_values(&session.id)?;
             for source in self.fields(project_id)? {
-                if !values.contains_key(&source.id) {
+                if !values.contains_key(&source.id) && !session.required_field_ids.contains(&source.id) {
                     continue;
                 }
                 let target = if let Some(target) = fields.get(&source.id) {
@@ -245,6 +246,11 @@ impl Store {
                     params![target, session.id, source.id],
                 )
                 .map_err(err)?;
+            }
+            for field_id in &mut session.required_field_ids {
+                if let Some(target_id) = fields.get(field_id) {
+                    *field_id = target_id.clone();
+                }
             }
             session.project_id = destination.into();
             session.questionnaire_id = None;
@@ -379,11 +385,69 @@ impl Store {
         if previous.is_some_and(|p| p != group.project_id) {
             return Err("That questionnaire belongs to another project.".into());
         }
+        if let Some(setup) = self.project_setup(&group.project_id)? {
+            let defaults = setup.questionnaires;
+            if defaults.iter().any(|item| item.id == group.id) {
+                let unchanged_count: usize = self.questionnaires(&group.project_id)?.iter()
+                    .filter(|other| other.id != group.id && defaults.iter().any(|item| item.id == other.id))
+                    .map(|other| other.questions.len())
+                    .sum();
+                if unchanged_count + group.questions.len() > 200 {
+                    return Err("Default questionnaires can have up to 200 questions in total.".into());
+                }
+            }
+        }
         for q in &mut group.questions {
             q.answer.clear();
         }
         self.conn.execute("INSERT INTO questionnaires(id,project_id,data) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data", params![group.id,group.project_id,serde_json::to_string(&group).map_err(err)?]).map_err(err)?;
         Ok(group)
+    }
+
+    pub fn project_setup(&self, project_id: &str) -> Result<Option<ProjectSetup>> {
+        self.project(project_id)?;
+        let raw: Option<String> = self.conn
+            .query_row("SELECT data FROM project_setup WHERE project_id=?1", [project_id], |r| r.get(0))
+            .optional().map_err(err)?;
+        raw.map(|data| serde_json::from_str(&data).map_err(err)).transpose()
+    }
+
+    pub fn save_project_setup(&self, project_id: &str, setup: ProjectSetup) -> Result<ProjectSetup> {
+        self.project(project_id)?;
+        let groups = self.questionnaires(project_id)?;
+        let fields = self.fields(project_id)?;
+        let mut ids = std::collections::HashSet::new();
+        let mut question_count = 0;
+        for default in &setup.questionnaires {
+            let group = groups.iter().find(|group| group.id == default.id)
+                .filter(|group| ids.insert(&group.id))
+                .ok_or("Choose each default questionnaire once from this project.")?;
+            question_count += group.questions.len();
+        }
+        if question_count > 200 {
+            return Err("Default questionnaires can have up to 200 questions in total.".into());
+        }
+        if setup.required_field_ids.iter().any(|id| !fields.iter().any(|field| field.id == *id)) {
+            return Err("Choose required fields from this project.".into());
+        }
+        let mut consent_ids = std::collections::HashSet::new();
+        for template in &setup.consent_templates {
+            let valid_id = template["id"].as_str().is_some_and(|id| !id.is_empty() && consent_ids.insert(id));
+            let valid_title = template["title"].as_str().is_some_and(|title| !title.trim().is_empty());
+            let valid_format = matches!(template["format"].as_str(), Some("text" | "pdf" | "docx"));
+            if !valid_id || !valid_title || !valid_format || !template["required"].is_boolean() {
+                return Err("Each consent form needs a unique ID, a title, and a supported format.".into());
+            }
+        }
+        let raw = serde_json::to_string(&setup).map_err(err)?;
+        if raw.len() > 2_000_000 {
+            return Err("This project setup is too large.".into());
+        }
+        self.conn.execute(
+            "INSERT INTO project_setup(project_id,data) VALUES(?1,?2) ON CONFLICT(project_id) DO UPDATE SET data=excluded.data",
+            params![project_id, raw],
+        ).map_err(err)?;
+        Ok(setup)
     }
 
     pub fn create_session(
@@ -392,29 +456,50 @@ impl Store {
         group_id: Option<&str>,
         date: &str,
     ) -> Result<Session> {
-        self.project(project_id)?;
-        let group = match group_id {
-            Some(wanted) => Some(
-                self.questionnaires(project_id)?
-                    .into_iter()
-                    .find(|g| g.id == wanted)
-                    .ok_or("Questionnaire not found in this project.")?,
-            ),
-            None => None,
+        let setup = self.project_setup(project_id)?.unwrap_or_default();
+        let defaults = match group_id {
+            Some(wanted) => vec![QuestionnaireDefault { id: wanted.into(), required: false }],
+            None => setup.questionnaires,
         };
+        let groups = self.questionnaires(project_id)?;
+        let grouped = group_id.is_none() && !defaults.is_empty();
+        let mut questionnaire_sections = Vec::new();
+        let mut questions = Vec::new();
+        let mut names = Vec::new();
+        for default in defaults {
+            let group = groups.iter().find(|g| g.id == default.id)
+                .ok_or("Questionnaire not found in this project.")?;
+            names.push(group.name.clone());
+            let items: Vec<Question> = group.questions.iter().map(|question| Question {
+                id: if grouped { id() } else { question.id.clone() },
+                text: question.text.clone(),
+                answer: String::new(),
+            }).collect();
+            if grouped {
+                questionnaire_sections.push(QuestionnaireSection {
+                    group_id: group.id.clone(),
+                    name: group.name.clone(),
+                    required: default.required,
+                    question_ids: items.iter().map(|question| question.id.clone()).collect(),
+                });
+            }
+            questions.extend(items);
+        }
         let s = Session {
             id: id(),
             project_id: project_id.into(),
             title: "Untitled session".into(),
             person: String::new(),
             date: date.into(),
-            questionnaire_id: group.as_ref().map(|g| g.id.clone()),
-            questionnaire_name: group
-                .as_ref()
-                .map_or("Blank form".into(), |g| g.name.clone()),
-            questions: group.map_or(Vec::new(), |g| g.questions),
+            questionnaire_id: group_id.map(str::to_owned),
+            questionnaire_name: if names.is_empty() { "Blank form".into() } else { names.join(" · ") },
+            questions,
             notes: String::new(),
             markers: Vec::new(),
+            questionnaire_sections,
+            required_field_ids: setup.required_field_ids,
+            consent_templates: setup.consent_templates,
+            consent_responses: Default::default(),
         };
         self.write_session(&s)?;
         Ok(s)
@@ -591,6 +676,44 @@ mod tests {
             2
         );
     }
+    #[test]
+    fn project_requirements_are_snapshotted_for_each_new_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let p = store.create_project("Research").unwrap();
+        let groups = store.questionnaires(&p.id).unwrap();
+        let email = store.save_field(ProjectField {
+            id: id(),
+            project_id: p.id.clone(),
+            name: "Email".into(),
+            kind: FieldType::Email,
+            options: vec![],
+        }).unwrap();
+        store.save_project_setup(&p.id, ProjectSetup {
+            questionnaires: vec![
+                QuestionnaireDefault { id: groups[0].id.clone(), required: true },
+                QuestionnaireDefault { id: groups[1].id.clone(), required: false },
+            ],
+            required_field_ids: vec![email.id.clone()],
+            consent_templates: vec![serde_json::json!({
+                "id": "consent", "title": "Research consent", "format": "text",
+                "required": true, "text": "Can we record?", "fields": []
+            })],
+        }).unwrap();
+        let session = store.create_session(&p.id, None, "2026-11-23").unwrap();
+        assert_eq!(session.questionnaire_sections.len(), 2);
+        assert!(session.questionnaire_sections[0].required);
+        assert!(!session.questionnaire_sections[1].required);
+        assert_eq!(session.required_field_ids, [email.id]);
+        assert_eq!(session.consent_templates[0]["title"], "Research consent");
+        assert_eq!(session.questions.len(), groups[0].questions.len() + groups[1].questions.len());
+        store.save_project_setup(&p.id, ProjectSetup::default()).unwrap();
+        drop(store);
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.session(&session.id).unwrap().questionnaire_sections.len(), 2);
+        assert!(store.create_session(&p.id, None, "2026-11-23").unwrap().consent_templates.is_empty());
+    }
+
     #[test]
     fn snapshots_persist_and_search_is_literal() {
         let dir = tempfile::tempdir().unwrap();

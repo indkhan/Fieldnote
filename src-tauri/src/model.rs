@@ -24,6 +24,30 @@ pub struct Project {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProjectSetup {
+    pub questionnaires: Vec<QuestionnaireDefault>,
+    pub required_field_ids: Vec<String>,
+    pub consent_templates: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionnaireDefault {
+    pub id: String,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionnaireSection {
+    pub group_id: String,
+    pub name: String,
+    pub required: bool,
+    pub question_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
@@ -39,6 +63,14 @@ pub struct Session {
     /// Timestamped notes tied to a moment in one of the session's recordings.
     #[serde(default)]
     pub markers: Vec<Marker>,
+    #[serde(default)]
+    pub questionnaire_sections: Vec<QuestionnaireSection>,
+    #[serde(default)]
+    pub required_field_ids: Vec<String>,
+    #[serde(default)]
+    pub consent_templates: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub consent_responses: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

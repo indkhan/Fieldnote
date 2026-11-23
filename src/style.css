@@ -49,3 +49,12 @@ html,body{background:var(--card);min-height:100%;} .surface{border-radius:0;} .c
 .danger{color:var(--destructive);border-color:#5a2a2c}
 .danger:hover{background:#2a1617}
 @media(max-width:560px){.live #live-hint{width:100%;margin:0;text-align:left}.dangerzone{flex-direction:column;align-items:flex-start}}
+.setup-section{margin:20px 0;border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+.setup-section h2{font-size:16px;margin:0}
+.setup-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px 0}
+.setup-row+.setup-row{border-top:1px solid var(--border)}
+.setup-row label{white-space:nowrap}
+.required-item{display:inline-block;margin-left:8px;color:#ffd693;background:#382b1e;border-radius:5px;padding:2px 6px;font-size:11px;font-weight:650;vertical-align:middle}
+.session-questionnaire{padding:10px 0;border-top:1px solid var(--border)}
+.session-questionnaire summary{cursor:pointer;font-weight:600}
+.session-questionnaire summary+.questions{margin-top:14px}
